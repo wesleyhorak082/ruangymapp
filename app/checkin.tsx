@@ -22,18 +22,17 @@ export default function CheckinScreen() {
   const [facing, setFacing] = useState<CameraType>('back');
   const [scanned, setScanned] = useState(false);
   const [checkedIn, setCheckedIn] = useState(false);
-  const [alreadyCheckedIn, setAlreadyCheckedIn] = useState(false);
-  const { checkIn, refreshStatus, checkInStatus } = useCheckIn();
+  const { checkIn } = useCheckIn(); // Only use checkIn, don't destructure other values
   const { user } = useAuth();
 
   // Reset states when component mounts
   useEffect(() => {
-    setAlreadyCheckedIn(false);
+    // Only reset on initial mount, not on every checkInStatus change
     setCheckedIn(false);
     setScanned(false);
-  }, [checkInStatus]);
+  }, []); // Empty dependency array - only run once on mount
 
-    const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
+  const handleBarCodeScanned = async ({ type, data }: { type: string; data: string }) => {
     if (scanned) return;
     
     setScanned(true);
@@ -41,35 +40,18 @@ export default function CheckinScreen() {
     // Validate QR code format using the validation function
     if (validateGymQRCode(data)) {
       try {
-        // Attempt to check in directly - let the API handle the "already checked in" logic
+        // Attempt to check in
         const success = await checkIn();
         
         if (success) {
-          // Set checked in state
+          // Set checked in state and ensure it stays
           setCheckedIn(true);
-          // Show success screen - user will click Done when ready
         } else {
-          // Always refresh the status to get the latest information from the server
-          await refreshStatus();
-          
-          // Now check if the user is actually already checked in
-          if (checkInStatus.is_checked_in) {
-            // Show informative message instead of error
-            Alert.alert(
-              'Already Checked In',
-              'You are already checked in to the gym. You can check out from the main screen when you\'re ready to leave.',
-              [
-                { text: 'View Status', onPress: () => setAlreadyCheckedIn(true) },
-                { text: 'Scan Again', onPress: () => setScanned(false) }
-              ]
-            );
-          } else {
-            Alert.alert(
-              'Check-in Failed',
-              'Unable to check in. Please try again.',
-              [{ text: 'Try Again', onPress: () => setScanned(false) }]
-            );
-          }
+          Alert.alert(
+            'Check-in Failed',
+            'Unable to check in. Please try again.',
+            [{ text: 'Try Again', onPress: () => setScanned(false) }]
+          );
         }
       } catch (error) {
         Alert.alert(
@@ -137,12 +119,9 @@ export default function CheckinScreen() {
           end={{ x: 1, y: 1 }}
         >
           <CheckCircle size={80} color="#FFFFFF" />
-          <Text style={styles.successTitle}>Checked In!</Text>
+          <Text style={styles.successTitle}>Checked In Successfully!</Text>
           <Text style={styles.successText}>
             Welcome to FitForge Gym! Enjoy your workout session.
-          </Text>
-          <Text style={styles.successSubtext}>
-            Tap "Done" when you're ready to continue
           </Text>
           <TouchableOpacity 
             style={styles.doneButton}
@@ -151,73 +130,6 @@ export default function CheckinScreen() {
             }}
           >
             <Text style={styles.doneButtonText}>Done</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.doneButton, { marginTop: 15, backgroundColor: 'rgba(255, 255, 255, 0.1)' }]}
-            onPress={async () => {
-              await refreshStatus();
-              router.back();
-            }}
-          >
-            <Text style={[styles.doneButtonText, { color: '#FFFFFF' }]}>Refresh Status</Text>
-          </TouchableOpacity>
-        </LinearGradient>
-      </View>
-    );
-  }
-
-  if (alreadyCheckedIn) {
-    return (
-      <View style={styles.container}>
-        <LinearGradient
-          colors={['#74B9FF', '#0984E3']}
-          style={styles.successContainer}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-        >
-          <CheckCircle size={80} color="#FFFFFF" />
-          <Text style={styles.successTitle}>Already Checked In!</Text>
-          <Text style={styles.successText}>
-            You are currently checked in to FitForge Gym.
-          </Text>
-          {checkInStatus.check_in_time && (
-            <Text style={styles.successSubtext}>
-              Check-in time: {new Date(checkInStatus.check_in_time).toLocaleTimeString()}
-            </Text>
-          )}
-          <Text style={styles.successSubtext}>
-            Duration: {checkInStatus.duration_minutes || 0} minutes
-          </Text>
-          <TouchableOpacity 
-            style={styles.doneButton}
-            onPress={() => {
-              setAlreadyCheckedIn(false);
-              router.back();
-            }}
-          >
-            <Text style={styles.doneButtonText}>Back to Main</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.doneButton, { marginTop: 15, backgroundColor: 'rgba(255, 255, 255, 0.2)' }]}
-            onPress={() => {
-              setAlreadyCheckedIn(false);
-              setScanned(false);
-            }}
-          >
-            <Text style={[styles.doneButtonText, { color: '#FFFFFF' }]}>Scan Again</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.doneButton, { marginTop: 15, backgroundColor: 'rgba(255, 255, 255, 0.1)' }]}
-            onPress={async () => {
-              await refreshStatus();
-              setAlreadyCheckedIn(false);
-              setScanned(false);
-            }}
-          >
-            <Text style={[styles.doneButtonText, { color: '#FFFFFF' }]}>Refresh Status</Text>
           </TouchableOpacity>
         </LinearGradient>
       </View>

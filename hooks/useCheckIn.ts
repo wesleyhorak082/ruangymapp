@@ -105,17 +105,10 @@ export const useCheckIn = () => {
       setLoading(true);
       setError(null);
 
-      // Use the API to check in - let the API handle the "already checked in" logic
+      // Use the API to check in
       const response: CheckInResponse = await gymAPI.checkIn(user.id);
 
       if (!response.success) {
-        // Check if the error is due to already being checked in
-        if (response.error === 'ALREADY_CHECKED_IN') {
-          // Don't set error message for already checked in - just return false
-          // The UI will handle this case appropriately
-          return false;
-        }
-        
         setError(response.message);
         return false;
       }

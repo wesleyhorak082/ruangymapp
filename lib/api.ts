@@ -11,29 +11,6 @@ export const gymAPI = {
   // Check in user
   async checkIn(userId: string): Promise<CheckInResponse> {
     try {
-      // Check if user is already checked in - be more specific about what constitutes "checked in"
-      const { data: existingCheckIn, error: fetchError } = await supabase
-        .from('gym_checkins')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('is_checked_in', true)
-        .is('check_out_time', null) // Ensure there's no check-out time
-        .gte('check_in_time', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()) // Only consider check-ins from last 24 hours
-        .single();
-
-      if (fetchError && fetchError.code !== 'PGRST116') {
-        console.error('Error checking existing check-in:', fetchError);
-        throw fetchError;
-      }
-
-      if (existingCheckIn) {
-        return {
-          success: false,
-          message: 'User is already checked in',
-          error: 'ALREADY_CHECKED_IN'
-        };
-      }
-
       // Get user profile to determine user type
       const { data: userProfile, error: profileError } = await supabase
         .from('user_profiles')
