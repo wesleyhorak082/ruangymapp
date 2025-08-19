@@ -13,13 +13,13 @@ export interface TrainerProgram {
       name: string;
       focus: string;
       duration: number;
-      exercises: Array<{
+      exercises: {
         name: string;
         sets: number;
         reps: string;
         rest: string;
         type: string;
-      }>;
+      }[];
     };
   };
   is_active: boolean;

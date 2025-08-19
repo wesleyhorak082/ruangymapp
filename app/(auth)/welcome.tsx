@@ -4,7 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { Dumbbell, Target, TrendingUp } from 'lucide-react-native';
 
-const { width, height } = Dimensions.get('window');
+const { height } = Dimensions.get('window');
 
 export default function WelcomeScreen() {
   return (
@@ -54,13 +54,6 @@ export default function WelcomeScreen() {
             onPress={() => router.push('/(auth)/login')}
           >
             <Text style={styles.secondaryButtonText}>I Already Have an Account</Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity
-            style={styles.adminButton}
-            onPress={() => router.push('/(auth)/admin-login')}
-          >
-            <Text style={styles.adminButtonText}>Staff/Admin Access</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -152,19 +145,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   secondaryButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  adminButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    paddingVertical: 16,
-    borderRadius: 16,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-  },
-  adminButtonText: {
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',

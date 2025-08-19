@@ -59,6 +59,8 @@ export class GamificationService {
   // Fetch user's gamification stats
   static async getUserStats(userId: string): Promise<UserStats | null> {
     try {
+      console.log(`🔍 Fetching stats for user: ${userId}`);
+      
       const { data, error } = await supabase
         .from('user_gamification_stats')
         .select('*')
@@ -68,13 +70,15 @@ export class GamificationService {
       if (error) {
         // If no rows found, don't log as error - this is normal for trainers
         if (error.code === 'PGRST116') {
+          console.log(`ℹ️ No stats found for user: ${userId}, will create default stats`);
           return null;
         }
-        console.error('Error fetching user stats:', error);
+        console.error('❌ Error fetching user stats:', error);
         return null;
       }
 
       if (!data) {
+        console.log(`ℹ️ No data returned for user: ${userId}, creating default stats`);
         // Create default stats for new user
         const defaultStats = {
           user_id: userId,
@@ -82,7 +86,7 @@ export class GamificationService {
           current_level: 1,
           current_streak: 0,
           longest_streak: 0,
-          total_workout_days: 0, // Changed from total_workouts
+          total_workouts: 0,
           total_checkins: 0,
           total_goals_achieved: 0,
           achievements_unlocked: 0,
@@ -96,16 +100,18 @@ export class GamificationService {
           .single();
 
         if (insertError) {
-          console.error('Error creating default stats:', insertError);
+          console.error('❌ Error creating default stats:', insertError);
           return null;
         }
 
+        console.log(`✅ Created default stats for user: ${userId}`);
         return this.mapUserStats(newStats);
       }
 
+      console.log(`✅ Found existing stats for user: ${userId}`);
       return this.mapUserStats(data);
     } catch (error) {
-      console.error('Error in getUserStats:', error);
+      console.error('❌ Exception in getUserStats:', error);
       return null;
     }
   }
@@ -113,6 +119,8 @@ export class GamificationService {
   // Fetch all available achievements
   static async getAvailableAchievements(): Promise<Achievement[]> {
     try {
+      console.log('🔍 Fetching available achievements...');
+      
       const { data, error } = await supabase
         .from('available_achievements')
         .select('*')
@@ -120,13 +128,14 @@ export class GamificationService {
         .order('points', { ascending: true });
 
       if (error) {
-        console.error('Error fetching available achievements:', error);
+        console.error('❌ Error fetching available achievements:', error);
         return [];
       }
 
+      console.log(`✅ Found ${data?.length || 0} available achievements`);
       return data || [];
     } catch (error) {
-      console.error('Error in getAvailableAchievements:', error);
+      console.error('❌ Exception in getAvailableAchievements:', error);
       return [];
     }
   }
@@ -134,36 +143,63 @@ export class GamificationService {
   // Fetch user's unlocked achievements
   static async getUserAchievements(userId: string): Promise<Achievement[]> {
     try {
-      const { data, error } = await supabase
+      console.log(`🔍 Fetching achievements for user: ${userId}`);
+      
+      // First get the user's unlocked achievements
+      const { data: userAchievements, error: userError } = await supabase
         .from('user_achievements')
-        .select(`
-          *,
-          available_achievements (
-            id,
-            name,
-            description,
-            icon,
-            points,
-            category,
-            requirement_type,
-            requirement_value,
-            requirement_description
-          )
-        `)
+        .select('*')
         .eq('user_id', userId);
 
-      if (error) {
-        console.error('Error fetching user achievements:', error);
+      if (userError) {
+        console.error('❌ Error fetching user achievements:', userError);
         return [];
       }
 
-      return (data || []).map(item => ({
-        ...item.available_achievements,
-        unlocked: true,
-        unlockedAt: item.unlocked_at,
-      }));
+      if (!userAchievements || userAchievements.length === 0) {
+        console.log('ℹ️ No achievements found for user');
+        return [];
+      }
+
+      // Get the achievement IDs
+      const achievementIds = userAchievements.map(ua => ua.achievement_id);
+
+      // Fetch the achievement details separately
+      const { data: availableAchievements, error: availableError } = await supabase
+        .from('available_achievements')
+        .select('*')
+        .in('id', achievementIds);
+
+      if (availableError) {
+        console.error('❌ Error fetching available achievements:', availableError);
+        return [];
+      }
+
+      // Create a map for quick lookup
+      const achievementMap = new Map();
+      availableAchievements.forEach(achievement => {
+        achievementMap.set(achievement.id, achievement);
+      });
+
+      // Combine the data
+      const result = userAchievements.map(item => {
+        const achievement = achievementMap.get(item.achievement_id);
+        if (!achievement) {
+          console.warn(`⚠️ Achievement ${item.achievement_id} not found in available_achievements`);
+          return null;
+        }
+        
+        return {
+          ...achievement,
+          unlocked: true,
+          unlockedAt: item.unlocked_at,
+        };
+      }).filter(Boolean); // Remove null entries
+
+      console.log(`✅ Found ${result.length} user achievements`);
+      return result;
     } catch (error) {
-      console.error('Error in getUserAchievements:', error);
+      console.error('❌ Exception in getUserAchievements:', error);
       return [];
     }
   }
@@ -324,33 +360,68 @@ export class GamificationService {
   // Fetch leaderboard
   static async getLeaderboard(): Promise<LeaderboardEntry[]> {
     try {
-      const { data, error } = await supabase
+      console.log('🔍 Fetching leaderboard...');
+      
+      // First get the gamification stats
+      const { data: statsData, error: statsError } = await supabase
         .from('user_gamification_stats')
-        .select(`
-          *,
-          profiles (
-            username,
-            full_name
-          )
-        `)
+        .select('*')
         .order('total_points', { ascending: false })
         .limit(50);
 
-      if (error) {
-        console.error('Error fetching leaderboard:', error);
+      if (statsError) {
+        console.error('❌ Error fetching gamification stats:', statsError);
         return [];
       }
 
-      return (data || []).map((entry, index) => ({
-        id: entry.user_id,
-        username: entry.profiles?.username || 'user_' + entry.user_id.slice(0, 8),
-        fullName: entry.profiles?.full_name || 'Unknown User',
-        points: entry.total_points,
-        level: entry.current_level,
-        rank: index + 1,
-      }));
+      if (!statsData || statsData.length === 0) {
+        console.log('ℹ️ No gamification stats found for leaderboard');
+        return [];
+      }
+
+      console.log(`✅ Found ${statsData.length} users for leaderboard`);
+
+      // Get user IDs for profile lookup
+      const userIds = statsData.map(entry => entry.user_id);
+
+      // Fetch user profiles separately
+      const { data: profilesData, error: profilesError } = await supabase
+        .from('user_profiles')
+        .select('id, username, full_name')
+        .in('id', userIds);
+
+      if (profilesError) {
+        console.error('❌ Error fetching user profiles:', profilesError);
+        // Continue without profile data
+      } else {
+        console.log(`✅ Found ${profilesData?.length || 0} user profiles`);
+      }
+
+      // Create a map of user ID to profile data
+      const profileMap = new Map();
+      if (profilesData) {
+        profilesData.forEach(profile => {
+          profileMap.set(profile.id, profile);
+        });
+      }
+
+      // Combine the data
+      const leaderboard = statsData.map((entry, index) => {
+        const profile = profileMap.get(entry.user_id);
+        return {
+          id: entry.user_id,
+          username: profile?.username || 'user_' + entry.user_id.slice(0, 8),
+          fullName: profile?.full_name || 'Unknown User',
+          points: entry.total_points,
+          level: entry.current_level,
+          rank: index + 1,
+        };
+      });
+
+      console.log(`✅ Leaderboard created with ${leaderboard.length} entries`);
+      return leaderboard;
     } catch (error) {
-      console.error('Error in getLeaderboard:', error);
+      console.error('❌ Exception in getLeaderboard:', error);
       return [];
     }
   }
@@ -404,23 +475,7 @@ export class GamificationService {
     }
   }
 
-  static async recordWorkout(userId: string): Promise<boolean> {
-    try {
-      // Update user stats
-      await this.updateUserStats(userId, 'workout', 1);
-      
-      // Check for achievements
-      await this.checkAndUnlockAchievements(userId, 'workout', 1);
-      
-      // Update workout frequency and streak
-      await this.updateWorkoutStats(userId);
-      
-      return true;
-    } catch (error) {
-      console.error('Error in recordWorkout:', error);
-      return false;
-    }
-  }
+
 
   static async updateWorkoutStats(userId: string): Promise<void> {
     try {
@@ -475,7 +530,7 @@ export class GamificationService {
           current_streak: newStreak,
           longest_streak: longestStreak,
           last_checkin_date: today,
-          total_workout_days: (currentStats.total_workout_days || 0) + 1, // Track unique workout days
+          total_workouts: (currentStats.total_workouts || 0) + 1, // Track unique workout days
           updated_at: new Date().toISOString(),
         })
         .eq('user_id', userId);
@@ -692,7 +747,7 @@ export class GamificationService {
       longestStreak: data.longest_streak || 0,
       level: data.current_level || 1,
       rank: 0, // Will be calculated separately
-      totalWorkoutDays: data.total_workout_days || 0, // Changed from total_workouts
+      totalWorkoutDays: data.total_workouts || 0,
       totalCheckins: data.total_checkins || 0,
       totalGoalsAchieved: data.total_goals_achieved || 0,
       achievementsUnlocked: data.achievements_unlocked || 0,

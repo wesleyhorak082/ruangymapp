@@ -8,6 +8,7 @@ import { useUserRoles } from '../../hooks/useUserRoles';
 import * as DocumentPicker from 'expo-document-picker';
 import { getUserAssignedPrograms, TrainerProgram, createTrainerProgram, getTrainerPrograms as fetchTrainerPrograms, deleteTrainerProgram } from '../../lib/trainerPrograms';
 import { createUserProgram, getUserPrograms, deleteUserProgram, UserProgram } from '../../lib/userPrograms';
+import ExerciseTrackingPanel from '../../components/ExerciseTrackingPanel';
 
 // Type definitions
 interface Exercise {
@@ -137,7 +138,7 @@ const workoutPrograms: { [key: string]: WorkoutProgram } = {
       duration: '6 weeks',
       difficulty: 'Beginner',
       sessions: 18,
-      color: ['#4ECDC4', '#44A08D'],
+      color: ['#FF8C42', '#F7931E'],
     description: 'High-intensity workouts to maximize calorie burn and fat loss',
     dailyWorkouts: {
       monday: {
@@ -208,7 +209,7 @@ const workoutPrograms: { [key: string]: WorkoutProgram } = {
       duration: '12 weeks',
       difficulty: 'Advanced',
       sessions: 36,
-      color: ['#6C5CE7', '#A29BFE'],
+      color: ['#FF6B35', '#FF8C42'],
     description: 'Hypertrophy-focused training to build muscle mass and definition',
     dailyWorkouts: {
       monday: {
@@ -336,79 +337,37 @@ export default function WorkoutsScreen() {
   };
 
   const saveProgram = async () => {
-    if (!newProgram.name.trim()) {
-      Alert.alert('Error', 'Please enter a program name');
+    if (!newProgram.name || workoutDays.length === 0) {
+      Alert.alert('Error', 'Please fill in all required fields');
       return;
     }
 
-    if (!newProgram.duration.trim()) {
-      Alert.alert('Error', 'Please enter a program duration');
-      return;
-    }
-
-    if (workoutDays.length === 0) {
-      Alert.alert('Error', 'Please add at least one workout day to your program');
-      return;
-    }
-
-    // Check if workout days have exercises
-    const hasExercises = workoutDays.some(day => day.exercises.length > 0);
-    if (!hasExercises) {
-      Alert.alert('Error', 'Please add at least one exercise to your workout days');
-      return;
-    }
-
-    setIsSaving(true);
     try {
-      console.log('Starting to save program...');
-      console.log('Program data:', newProgram);
-      console.log('Workout days:', workoutDays);
+      setIsSaving(true);
       
-      // Convert workoutDays array to workout_days object format
-      const workoutDaysObject: { [key: string]: any } = {};
-      workoutDays.forEach((day, index) => {
-        const dayName = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'][index];
-        if (dayName) {
-          workoutDaysObject[dayName] = {
-            name: day.name || `Day ${index + 1}`,
-            focus: day.focus || 'General Fitness',
-            duration: day.duration || 60,
-            exercises: day.exercises || []
-          };
-        }
+      const result = await createTrainerProgram({
+        ...newProgram,
+        workout_days: workoutDays,
       });
 
-      const programData = {
-        name: newProgram.name,
-        description: newProgram.description,
-        difficulty: newProgram.difficulty as 'Beginner' | 'Intermediate' | 'Advanced',
-        duration: newProgram.duration,
-        category: newProgram.category as 'Strength' | 'Cardio' | 'Flexibility' | 'Mixed' | 'Custom',
-        workout_days: workoutDaysObject
-      };
-
-      console.log('Calling createTrainerProgram API...');
-      const result = await createTrainerProgram(programData);
-      console.log('API result:', result);
-      
-      if (result.success && result.program) {
-        const updatedPrograms = [...programs, result.program];
-        setPrograms(updatedPrograms);
-        
-        // Reset form
-        setNewProgram({ name: '', description: '', difficulty: 'Beginner', duration: '', category: 'Strength' });
+      if (result.success) {
+        Alert.alert('Success', 'Program saved successfully!');
+        setNewProgram({
+          name: '',
+          description: '',
+          difficulty: 'beginner',
+          estimated_duration: 4,
+          category: 'strength',
+        });
         setWorkoutDays([]);
-        
-        // Switch to My Programs tab to show the new program
-        setActiveTab('my-programs');
-        
-        Alert.alert('Success', 'Program created successfully! You can now view it in My Programs.');
+        setShowCreateModal(false);
+        // TODO: Implement fetchPrograms function
       } else {
-        Alert.alert('Error', result.error || 'Failed to create program');
+        Alert.alert('Error', result.error || 'Failed to save program');
       }
     } catch (error) {
       console.error('Error saving program:', error);
-      Alert.alert('Error', 'Failed to create program');
+      Alert.alert('Error', 'An unexpected error occurred');
     } finally {
       setIsSaving(false);
     }
@@ -659,7 +618,7 @@ export default function WorkoutsScreen() {
   return (
     <View style={styles.container}>
       <LinearGradient
-        colors={['#2D3436', '#636E72']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -732,13 +691,13 @@ export default function WorkoutsScreen() {
                         style={styles.programActionButton}
                         onPress={() => setEditingProgram(program)}
                       >
-                        <Edit size={16} color="#6C5CE7" />
+                        <Edit size={16} color="#FF6B35" />
                       </TouchableOpacity>
                       <TouchableOpacity 
                         style={styles.programActionButton}
                         onPress={() => assignProgramToUser(program)}
                       >
-                        <Users size={16} color="#10B981" />
+                        <Users size={16} color="#FF8C42" />
                       </TouchableOpacity>
                       <TouchableOpacity 
                         style={styles.programActionButton}
@@ -1041,7 +1000,7 @@ export default function WorkoutsScreen() {
           <View>
             <Text style={styles.sectionTitle}>Upload PDF Program</Text>
             <View style={styles.uploadCard}>
-              <Upload size={48} color="#6C5CE7" />
+                              <Upload size={48} color="#FF6B35" />
               <Text style={styles.uploadTitle}>Upload Your Program</Text>
               <Text style={styles.uploadDescription}>
                 Upload a PDF file containing your gym program. The file will be stored locally on your device.
@@ -1103,6 +1062,8 @@ function RegularWorkoutsInterface() {
   const [repsInput, setRepsInput] = useState('');
   const [setsInput, setSetsInput] = useState('');
   const [notesInput, setNotesInput] = useState('');
+  const [trackingPanelVisible, setTrackingPanelVisible] = useState(false);
+  const [activeTrackingExercise, setActiveTrackingExercise] = useState<Exercise | null>(null);
 
   // User workout builder state
   const [workoutDays, setWorkoutDays] = useState<any[]>([]);
@@ -1210,7 +1171,7 @@ function RegularWorkoutsInterface() {
         duration: program.duration,
         difficulty: program.difficulty,
         sessions: Object.keys(program.workout_days).length,
-        color: ['#6C5CE7', '#A855F7'] as [string, string], // Purple gradient for trainer programs
+        color: ['#FF6B35', '#FF8C42'] as [string, string], // Orange gradient for trainer programs
         description: program.description || '',
         dailyWorkouts: program.workout_days
       };
@@ -1434,9 +1395,7 @@ function RegularWorkoutsInterface() {
 
     setIsSaving(true);
     try {
-      console.log('Starting to save user program...');
-      console.log('Program data:', newProgram);
-      console.log('Workout days:', workoutDays);
+
       
       // Convert workoutDays array to workout_days object format
       const workoutDaysObject: { [key: string]: any } = {};
@@ -1461,9 +1420,7 @@ function RegularWorkoutsInterface() {
         workout_days: workoutDaysObject
       };
 
-      console.log('Calling createUserProgram API...');
       const result = await createUserProgram(programData);
-      console.log('API result:', result);
       
       if (result.success && result.program) {
         const updatedPrograms = [...userPrograms, result.program];
@@ -1522,12 +1479,35 @@ function RegularWorkoutsInterface() {
 
   // Weight tracking functions
   const openTrackingModal = (exercise: ExerciseWithLogs) => {
-    setSelectedExercise(exercise);
-    setWeightInput('');
-    setRepsInput('');
-    setSetsInput('');
-    setNotesInput('');
-    setTrackingModalVisible(true);
+    setActiveTrackingExercise(exercise);
+    setTrackingPanelVisible(true);
+  };
+
+  const closeTrackingPanel = () => {
+    setTrackingPanelVisible(false);
+    setActiveTrackingExercise(null);
+  };
+
+  const handleTrackingSave = async () => {
+    // Refresh exercise progress after saving
+    if (todayWorkout && selectedProgram) {
+      try {
+        // Refresh exercise progress data
+        todayWorkout.exercises.forEach(async (exercise) => {
+          const progress = await getExerciseProgress(exercise.name);
+          exercise.progress = progress;
+        });
+        
+        // Trigger a refresh of the progress tab data
+        // This will be handled by the progress tab's useEffect
+        console.log('Exercise sets saved, progress data refreshed');
+        
+        // Show success message
+        Alert.alert('Success', 'Exercise sets saved and progress updated!');
+      } catch (error) {
+        console.error('Error refreshing progress data:', error);
+      }
+    }
   };
 
   const saveExerciseLog = async () => {
@@ -1630,7 +1610,7 @@ function RegularWorkoutsInterface() {
   return (
     <View style={styles.container}>
       <LinearGradient
-        colors={['#2D3436', '#636E72']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -1670,8 +1650,7 @@ function RegularWorkoutsInterface() {
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {activeTab === 'programs' && (
           <View>
-            <Text style={styles.sectionTitle}>Choose Your Program</Text>
-            
+
             {/* My Programs Section */}
             {userPrograms.length > 0 && (
               <View style={styles.myProgramsSection}>
@@ -1715,7 +1694,9 @@ function RegularWorkoutsInterface() {
                               <Text style={styles.selectedText}>✓ Selected</Text>
                             </View>
                           ) : (
-                            <ChevronRight size={24} color="#FFFFFF" />
+                            <View style={styles.chevronContainer}>
+                              <ChevronRight size={24} color="rgba(255, 255, 255, 0.9)" />
+                            </View>
                           )}
                         </View>
                       </View>
@@ -1730,7 +1711,7 @@ function RegularWorkoutsInterface() {
                           Alert.alert('Edit', 'Edit functionality coming soon!');
                         }}
                       >
-                        <Edit size={16} color="#6C5CE7" />
+                        <Edit size={16} color="#FF6B35" />
                       </TouchableOpacity>
                       <TouchableOpacity 
                         style={styles.programActionButton}
@@ -1784,16 +1765,14 @@ function RegularWorkoutsInterface() {
                         {selectedProgram?.id === program.id ? (
                           <View style={styles.selectedBadge}>
                             <Text style={styles.selectedText}>✓ Selected</Text>
-                          </View>
-                        ) : (
-                          <ChevronRight size={24} color="#FFFFFF" />
-                        )}
+                            </View>
+                          ) : null}
+                        </View>
                       </View>
-                    </View>
-                  </LinearGradient>
-                </TouchableOpacity>
-              ))}
-            </View>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
             {/* My Program Section - Buttons Only */}
             {selectedProgram && (
@@ -1821,7 +1800,7 @@ function RegularWorkoutsInterface() {
                     }
                   }}
                 >
-                  <Users size={20} color="#6C5CE7" />
+                  <Users size={20} color="#FF8C42" />
                   <Text style={styles.myProgramsButtonText}>My Programs</Text>
                 </TouchableOpacity>
               </View>
@@ -1899,15 +1878,15 @@ function RegularWorkoutsInterface() {
               style={styles.trainerProgramButton}
               onPress={handleTrainerProgramPress}
             >
-              <Users size={24} color="#6C5CE7" />
-              <Text style={styles.trainerProgramText}>My Trainer's Program</Text>
+                              <Users size={24} color="#FF8C42" />
+              <Text style={styles.trainerProgramText}>My Trainer&apos;s Program</Text>
             </TouchableOpacity>
           </View>
         )}
 
                 {activeTab === 'today' && (
           <View>
-            <Text style={styles.sectionTitle}>Today's Workout</Text>
+            <Text style={styles.sectionTitle}>Today&apos;s Workout</Text>
             {selectedProgram ? (
               <View>
                 {/* Day Navigation */}
@@ -1990,7 +1969,7 @@ function RegularWorkoutsInterface() {
                         </LinearGradient>
                         
                         <View style={styles.exercisesList}>
-                          <Text style={styles.exercisesTitle}>{currentDay.charAt(0).toUpperCase() + currentDay.slice(1)}'s Exercises</Text>
+                          <Text style={styles.exercisesTitle}>{currentDay.charAt(0).toUpperCase() + currentDay.slice(1)}&apos;s Exercises</Text>
                           {selectedDayWorkout.exercises.map((exercise, index) => (
                             <View key={index} style={styles.exerciseItem}>
                               <View style={styles.exerciseHeader}>
@@ -2045,6 +2024,18 @@ function RegularWorkoutsInterface() {
                                   )}
                                 </View>
                               </View>
+
+                              {/* Exercise Tracking Panel */}
+                              {trackingPanelVisible && activeTrackingExercise?.name === exercise.name && (
+                                <View style={styles.trackingPanelContainer}>
+                                  <ExerciseTrackingPanel
+                                    exercise={exercise}
+                                    isVisible={trackingPanelVisible}
+                                    onClose={closeTrackingPanel}
+                                    onSave={handleTrackingSave}
+                                  />
+                                </View>
+                              )}
                             </View>
                           ))}
                         </View>
@@ -2057,7 +2048,7 @@ function RegularWorkoutsInterface() {
                         <Text style={styles.noWorkoutTitle}>Rest Day!</Text>
                         <Text style={styles.noWorkoutText}>
                           {currentDay.charAt(0).toUpperCase() + currentDay.slice(1)} is your rest day. 
-                          Take time to recover and prepare for tomorrow's workout.
+                          Take time to recover and prepare for tomorrow&apos;s workout.
                         </Text>
                       </View>
                     );
@@ -2069,7 +2060,7 @@ function RegularWorkoutsInterface() {
                 <Target size={48} color="#636E72" />
                 <Text style={styles.selectProgramTitle}>Select a Program</Text>
                 <Text style={styles.selectProgramText}>
-                  Choose a workout program from the Programs tab to see today's workout.
+                  Choose a workout program from the Programs tab to see today&apos;s workout.
                 </Text>
                 <TouchableOpacity 
                   style={styles.selectProgramButton}
@@ -2110,7 +2101,7 @@ function RegularWorkoutsInterface() {
 
             {/* Workout Builder Interface */}
             {showWorkoutBuilder && (
-              <View style={styles.workoutBuilderContainer}>
+              <>
                 {/* Program Info Card */}
                 <View style={styles.programInfoCard}>
                   <Text style={styles.cardTitle}>Program Information</Text>
@@ -2384,12 +2375,15 @@ function RegularWorkoutsInterface() {
                     )}
                   </TouchableOpacity>
                 </View>
-              </View>
+              </>
             )}
 
 
           </View>
         )}
+        
+        {/* Bottom padding to avoid phone navigation buttons */}
+        <View style={styles.bottomPadding} />
       </ScrollView>
 
       {/* Weight Tracking Modal */}
@@ -2474,7 +2468,7 @@ const getExerciseTypeColor = (type: string): string => {
   switch (type.toLowerCase()) {
     case 'compound': return '#FF6B35';
     case 'isolation': return '#4ECDC4';
-    case 'cardio': return '#6C5CE7';
+            case 'cardio': return '#FF6B35';
     case 'core': return '#00B894';
     case 'plyometric': return '#E17055';
     case 'isometric': return '#FDCB6E';
@@ -2490,7 +2484,7 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingTop: 60,
-    paddingHorizontal: 20,
+    paddingHorizontal: 16, // Reduced from 20 to 16 for consistency
     paddingBottom: 30,
     borderBottomLeftRadius: 30,
     borderBottomRightRadius: 30,
@@ -2509,7 +2503,7 @@ const styles = StyleSheet.create({
   tabContainer: {
     flexDirection: 'row',
     backgroundColor: '#FFFFFF',
-    marginHorizontal: 20,
+    marginHorizontal: 16, // Reduced from 20 to 16 to match content padding
     marginTop: 20,
     borderRadius: 16,
     padding: 6,
@@ -2528,7 +2522,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   activeTab: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.2,
@@ -2546,7 +2540,7 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    padding: 20,
+    padding: 16, // Reduced from 20 to 16 for better mobile experience
   },
   sectionTitle: {
     fontSize: 22,
@@ -2555,27 +2549,31 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   programCard: {
-    marginBottom: 20,
-    borderRadius: 20,
+    marginBottom: 24,
+    borderRadius: 24,
     overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: 'transparent',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 12,
-  },
-  selectedProgramCard: {
-    borderColor: '#00B894',
-    shadowColor: '#00B894',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#FF6B35',
     shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.2,
-    shadowRadius: 20,
+    shadowOpacity: 0.08,
+    shadowRadius: 24,
     elevation: 16,
   },
+  selectedProgramCard: {
+    borderColor: '#FF6B35',
+    borderWidth: 2,
+    shadowColor: '#FF6B35',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.25,
+    shadowRadius: 32,
+    elevation: 20,
+    transform: [{ scale: 1.02 }],
+  },
   programGradient: {
-    padding: 24,
+    padding: 28,
+    borderRadius: 24,
   },
   programContent: {
     flexDirection: 'row',
@@ -2586,26 +2584,37 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   programName: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1E293B',
-    marginBottom: 6,
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginBottom: 8,
+    letterSpacing: 0.5,
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
   },
   programDescription: {
     fontSize: 16,
-    color: '#475569',
-    marginBottom: 12,
-    lineHeight: 22,
+    color: 'rgba(255, 255, 255, 0.9)',
+    marginBottom: 16,
+    lineHeight: 24,
+    fontWeight: '500',
   },
   programDetails: {
     fontSize: 14,
-    color: '#64748B',
-    marginBottom: 12,
-    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.8)',
+    marginBottom: 16,
+    fontWeight: '600',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
   },
   programStats: {
     flexDirection: 'row',
-    gap: 20,
+    gap: 24,
+    marginTop: 4,
   },
   statItem: {
     flexDirection: 'row',
@@ -2613,25 +2622,38 @@ const styles = StyleSheet.create({
   },
   statText: {
     fontSize: 14,
-    color: '#64748B',
-    marginLeft: 6,
-    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.9)',
+    marginLeft: 8,
+    fontWeight: '600',
   },
   selectedBadge: {
-    backgroundColor: 'rgba(0, 184, 148, 0.9)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 53, 0.3)',
   },
   selectedText: {
-    color: '#FFFFFF',
+    color: '#FF6B35',
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  chevronContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    padding: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   createProgramButton: {
     backgroundColor: '#FFFFFF',
@@ -2651,30 +2673,31 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   createProgramText: {
-    color: '#6C5CE7',
+    color: '#FF6B35',
     fontWeight: '700',
     marginLeft: 12,
     fontSize: 18,
   },
   trainerProgramButton: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 24,
+    backgroundColor: '#FF6B35',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 16,
+    marginTop: 4,
     borderWidth: 2,
-    borderColor: '#6C5CE7',
+    borderColor: '#FF6B35',
     borderStyle: 'solid',
-    shadowColor: '#000',
+    shadowColor: '#FF6B35',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
     elevation: 6,
   },
   trainerProgramText: {
-    color: '#6C5CE7',
+    color: '#FFFFFF',
     fontWeight: '700',
     marginLeft: 12,
     fontSize: 18,
@@ -2728,16 +2751,16 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   startTodayWorkoutButton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: '#FF6B35',
     paddingHorizontal: 24,
     paddingVertical: 14,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
+    borderColor: '#FF6B35',
     marginTop: 16,
-    shadowColor: '#000',
+    shadowColor: '#FF6B35',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 6,
   },
@@ -2768,6 +2791,10 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
+  trackingPanelContainer: {
+    marginHorizontal: -16, // Break out of parent padding (matches new content padding)
+    marginBottom: -16, // Extend to bottom edge
+  },
   exerciseHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2781,7 +2808,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   exerciseType: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
@@ -2827,10 +2854,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderRadius: 12,
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
+    backgroundColor: 'rgba(255, 107, 53, 0.1)',
   },
   actionButtonText: {
-    color: '#6C5CE7',
+    color: '#FF6B35',
     fontSize: 14,
     fontWeight: '600',
     marginLeft: 8,
@@ -2867,7 +2894,7 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   addExerciseButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     borderRadius: 16,
     paddingVertical: 16,
     paddingHorizontal: 24,
@@ -2935,7 +2962,7 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   emptyButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     borderRadius: 16,
     paddingVertical: 16,
     paddingHorizontal: 32,
@@ -3006,7 +3033,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   selectProgramButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     borderRadius: 16,
     paddingHorizontal: 24,
     paddingVertical: 12,
@@ -3193,14 +3220,25 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   programActionButton: {
-    padding: 8,
-    borderRadius: 8,
-    backgroundColor: '#F8F9FA',
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 107, 53, 0.1)',
+    minWidth: 44,
+    minHeight: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   uploadedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
@@ -3217,23 +3255,28 @@ const styles = StyleSheet.create({
   pickerContainer: {
     flexDirection: 'row',
     gap: 8,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-start',
   },
   pickerOption: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 8,
     backgroundColor: '#F8F9FA',
     borderWidth: 1,
     borderColor: '#E9ECEF',
+    minWidth: 60,
+    alignItems: 'center',
   },
   pickerOptionActive: {
     backgroundColor: '#FF6B35',
     borderColor: '#FF6B35',
   },
   pickerOptionText: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#636E72',
     fontWeight: '500',
+    textAlign: 'center',
   },
   pickerOptionTextActive: {
     color: '#FFFFFF',
@@ -3252,6 +3295,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 16,
     marginLeft: 8,
+  },
+  createButtonDisabled: {
+    backgroundColor: '#9CA3AF',
+    opacity: 0.7,
   },
   uploadCard: {
     backgroundColor: '#FFFFFF',
@@ -3279,7 +3326,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   uploadButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3309,17 +3356,17 @@ const styles = StyleSheet.create({
   workoutBuilderTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#2D3436',
+    color: '#374151',
     marginBottom: 8,
   },
   workoutBuilderSubtitle: {
     fontSize: 14,
-    color: '#636E72',
-    marginBottom: 20,
+    color: '#6B7280',
+    marginBottom: 32,
     lineHeight: 20,
   },
   addWorkoutDayButton: {
-    backgroundColor: '#00B894',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3328,6 +3375,12 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   addWorkoutDayText: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+    fontSize: 16,
+    marginLeft: 8,
+  },
+  addWorkoutDayButtonText: {
     color: '#FFFFFF',
     fontWeight: '600',
     fontSize: 16,
@@ -3353,7 +3406,7 @@ const styles = StyleSheet.create({
   workoutDayTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#2D3436',
+    color: '#374151',
   },
   removeDayButton: {
     padding: 8,
@@ -3371,10 +3424,10 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 4,
     borderWidth: 1,
     borderColor: 'rgba(108, 92, 231, 0.1)',
   },
@@ -3383,14 +3436,15 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 4,
     borderWidth: 1,
     borderColor: 'rgba(16, 185, 129, 0.1)',
     minHeight: 400,
     position: 'relative',
+    marginBottom: 24,
   },
   saveProgramCard: {
     backgroundColor: '#FFFFFF',
@@ -3408,7 +3462,7 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#1E293B',
+    color: '#374151',
     marginBottom: 8,
   },
 
@@ -3503,13 +3557,15 @@ const styles = StyleSheet.create({
 
   // My Programs section styles
   myProgramsSection: {
-    marginBottom: 32,
+    marginBottom: 40,
   },
   myProgramsTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 24,
+    fontWeight: '800',
     color: '#1E293B',
-    marginBottom: 16,
+    marginBottom: 20,
+    letterSpacing: 0.5,
+    textAlign: 'left',
   },
   prebuiltProgramsSection: {
     marginBottom: 32,
@@ -3523,11 +3579,12 @@ const styles = StyleSheet.create({
   programActionsRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    gap: 8,
-    padding: 16,
-    backgroundColor: '#F8FAFC',
+    gap: 12,
+    padding: 20,
+    backgroundColor: 'rgba(248, 250, 252, 0.8)',
     borderTopWidth: 1,
-    borderTopColor: 'rgba(30, 41, 59, 0.1)',
+    borderTopColor: 'rgba(255, 107, 53, 0.1)',
+    backdropFilter: 'blur(10px)',
   },
 
 
@@ -3575,14 +3632,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FF6B35',
     borderWidth: 2,
-    borderColor: '#6C5CE7',
+    borderColor: '#FF6B35',
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 20,
     marginTop: 16,
-    shadowColor: '#6C5CE7',
+    shadowColor: '#FF6B35',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
@@ -3591,7 +3648,7 @@ const styles = StyleSheet.create({
   myProgramsButtonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#6C5CE7',
+    color: '#FFFFFF',
     marginLeft: 8,
   },
 
@@ -3652,15 +3709,17 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 24,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 12,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 6,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   builderGradient: {
     padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   builderDescription: {
     fontSize: 16,
@@ -3675,7 +3734,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.3)',
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
   },
   builderButtonText: {
     color: '#FFFFFF',
@@ -3721,5 +3780,8 @@ const styles = StyleSheet.create({
   templateExercises: {
     fontSize: 14,
     color: '#64748B',
+  },
+  bottomPadding: {
+    height: 100, // Add sufficient bottom padding to avoid phone navigation
   },
 });

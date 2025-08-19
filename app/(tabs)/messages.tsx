@@ -3,14 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   TouchableOpacity,
   TextInput,
   FlatList,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   Image,
+  Modal,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
@@ -19,19 +19,20 @@ import {
   MessageCircle, 
   Send, 
   Search, 
-  Users, 
   ArrowLeft,
   MoreVertical,
-  Phone,
-  Video,
-  Image as ImageIcon,
   Paperclip,
   Camera,
-  FileText
+  FileText,
+  Plus,
+  User,
+  UserCheck
 } from 'lucide-react-native';
-import { router } from 'expo-router';
+
 import { useAuth } from '@/contexts/AuthContext';
 import { useUserRoles } from '@/hooks/useUserRoles';
+import { useOnlineStatus } from '@/hooks/useOnlineStatus';
+
 import { 
   getUserConversations, 
   getConversationMessages, 
@@ -39,22 +40,26 @@ import {
   markMessagesAsRead,
   searchConversations,
   uploadFileToStorage,
-  ConversationWithParticipant,
-  MessageWithSender
+  getConnectedUsers,
+  startNewConversation,
+  getOrCreateConversation
 } from '@/lib/messaging';
+import { supabase } from '@/lib/supabase';
 import EnhancedMessage from '@/components/EnhancedMessage';
+import ProfilePicture from '@/components/ProfilePicture';
 
 interface Conversation {
   id: string;
   participant_id: string;
   participant_name: string;
   participant_username: string;
-  participant_type: 'trainer' | 'client';
+  participant_type: 'trainer' | 'client'; // Changed from 'user' to 'client' to match existing interface
   last_message: string;
   last_message_time: string;
   unread_count: number;
   is_online: boolean;
   profile_image?: string;
+  avatar_url?: string; // Add avatar_url for profile picture
 }
 
 interface Message {
@@ -66,7 +71,7 @@ interface Message {
   is_read: boolean;
   message_type: 'text' | 'image' | 'file';
   // Enhanced features
-  delivery_status: 'sent' | 'delivered' | 'read';
+  delivery_status: 'sent' | 'delivered' | 'read' | 'failed'; // Added 'failed' to match API
   file_url?: string;
   file_name?: string;
   file_size?: number;
@@ -75,9 +80,21 @@ interface Message {
   reply_to_message_id?: string;
 }
 
+interface ConnectedUser {
+  id: string;
+  name: string;
+  type: 'user' | 'trainer';
+  avatar_url?: string;
+  specialty?: string;
+  hourly_rate?: number;
+  is_online?: boolean;
+  last_seen?: string;
+}
+
 export default function MessagesScreen() {
   const { user } = useAuth();
-  const { isTrainer } = useUserRoles();
+  const { isTrainer, loading: rolesLoading } = useUserRoles();
+  const { isOnline: currentUserOnline } = useOnlineStatus();
   
   // Helper function to format time ago
   const formatTimeAgo = (date: Date): string => {
@@ -109,6 +126,12 @@ export default function MessagesScreen() {
   const [showAttachmentOptions, setShowAttachmentOptions] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
+  // New state for conversation creation
+  const [showNewConversationModal, setShowNewConversationModal] = useState(false);
+  const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
+  const [loadingConnectedUsers, setLoadingConnectedUsers] = useState(false);
+
+
   useEffect(() => {
     fetchConversations();
   }, []);
@@ -127,6 +150,51 @@ export default function MessagesScreen() {
     }
   }, [selectedConversation]);
 
+  // New useEffect to fetch connected users when modal opens
+  useEffect(() => {
+    if (showNewConversationModal && user?.id) {
+      fetchConnectedUsers();
+    }
+  }, [showNewConversationModal, user?.id]);
+
+  // Real-time online status updates
+  useEffect(() => {
+    if (!user?.id) return;
+
+    // Subscribe to online status changes
+    const channel = supabase
+      .channel('online_status')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'user_online_status',
+        },
+        (payload: any) => {
+          // Update connected users list if the changed user is in our list
+          if (payload.eventType === 'UPDATE' || payload.eventType === 'INSERT') {
+            setConnectedUsers(prev => 
+              prev.map(user => 
+                user.id === payload.new.user_id 
+                  ? { 
+                      ...user, 
+                      is_online: payload.new.is_online,
+                      last_seen: payload.new.last_seen
+                    }
+                  : user
+              )
+            );
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
+
   const fetchConversations = async () => {
     try {
       setLoading(true);
@@ -140,11 +208,12 @@ export default function MessagesScreen() {
         participant_id: conv.other_participant?.id || '',
         participant_name: conv.other_participant?.name || 'Unknown User',
         participant_username: conv.other_participant?.name || 'unknown',
-        participant_type: conv.other_participant?.type || 'user',
+        participant_type: conv.other_participant?.type === 'trainer' ? 'trainer' : 'client', // Map 'user' to 'client'
         last_message: conv.last_message?.content || 'No messages yet',
         last_message_time: formatTimeAgo(new Date(conv.last_message_time || new Date())),
         unread_count: conv.unread_count_participant_1 || conv.unread_count_participant_2 || 0,
         is_online: false, // TODO: Implement online status
+        avatar_url: conv.other_participant?.avatar_url, // Include avatar URL
       }));
       
       setConversations(transformedConversations || []);
@@ -170,15 +239,15 @@ export default function MessagesScreen() {
         content: msg.content,
         timestamp: msg.created_at,
         is_read: msg.is_read,
-        message_type: msg.message_type,
+        message_type: msg.message_type === 'system' ? 'text' : msg.message_type,
         // Enhanced features
         delivery_status: msg.delivery_status || 'sent',
-        file_url: msg.file_url,
-        file_name: msg.file_name,
-        file_size: msg.file_size,
-        file_type: msg.file_type,
-        thumbnail_url: msg.thumbnail_url,
-        reply_to_message_id: msg.reply_to_message_id,
+        file_url: msg.file_url || undefined,
+        file_name: msg.file_name || undefined,
+        file_size: msg.file_size || undefined,
+        file_type: msg.file_type || undefined,
+        thumbnail_url: msg.thumbnail_url || undefined,
+        reply_to_message_id: msg.reply_to_message_id || undefined,
       }));
       
       setMessages(transformedMessages || []);
@@ -209,11 +278,12 @@ export default function MessagesScreen() {
         participant_id: conv.other_participant?.id || '',
         participant_name: conv.other_participant?.name || 'Unknown User',
         participant_username: conv.other_participant?.name || 'unknown',
-        participant_type: conv.other_participant?.type || 'user',
+        participant_type: conv.other_participant?.type === 'trainer' ? 'trainer' : 'client', // Map 'user' to 'client'
         last_message: conv.last_message?.content || 'No messages yet',
         last_message_time: formatTimeAgo(new Date(conv.last_message_time || new Date())),
         unread_count: conv.unread_count_participant_1 || conv.unread_count_participant_2 || 0,
         is_online: false, // TODO: Implement online status
+        avatar_url: conv.other_participant?.avatar_url, // Include avatar URL
       }));
       
       setFilteredConversations(transformedResults || []);
@@ -254,11 +324,11 @@ export default function MessagesScreen() {
         }
         
         attachment = {
-          file_url: uploadedFileUrl,
+          file_url: uploadedFileUrl || '', // Ensure it's not null
           file_name: selectedAttachment.name,
           file_size: selectedAttachment.size || 0,
           file_type: selectedAttachment.mimeType || 'application/octet-stream',
-          thumbnail_url: selectedAttachment.type === 'image' ? uploadedFileUrl : undefined,
+          thumbnail_url: selectedAttachment.type === 'image' ? uploadedFileUrl || undefined : undefined,
         };
       }
 
@@ -274,20 +344,20 @@ export default function MessagesScreen() {
 
       // Create local message object for UI
       const newMessage: Message = {
-        id: sentMessage?.id || Date.now().toString(),
+        id: sentMessage?.message?.id || `temp_${Date.now()}`, // Use temp prefix for temporary IDs
         sender_id: user.id,
         receiver_id: selectedConversation.participant_id || '',
         content: messageText.trim() || (selectedAttachment ? `Sent ${selectedAttachment.type}` : ''),
-        timestamp: sentMessage?.created_at || new Date().toISOString(),
+        timestamp: sentMessage?.message?.created_at || new Date().toISOString(),
         is_read: false,
         message_type: messageType,
         // Enhanced features
         delivery_status: 'sent',
-        file_url: attachment?.file_url,
-        file_name: attachment?.file_name,
-        file_size: attachment?.file_size,
-        file_type: attachment?.file_type,
-        thumbnail_url: attachment?.thumbnail_url,
+        file_url: attachment?.file_url || undefined,
+        file_name: attachment?.file_name || undefined,
+        file_size: attachment?.file_size || undefined,
+        file_type: attachment?.file_type || undefined,
+        thumbnail_url: attachment?.thumbnail_url || undefined,
         reply_to_message_id: undefined,
       };
 
@@ -447,15 +517,80 @@ export default function MessagesScreen() {
     setSelectedAttachment(null);
   };
 
+  // New function to fetch connected users
+  const fetchConnectedUsers = async () => {
+    try {
+      setLoadingConnectedUsers(true);
+      if (!user?.id) return;
+      
+      const users = await getConnectedUsers(user.id);
+      setConnectedUsers(users);
+    } catch (error) {
+      console.error('Error fetching connected users:', error);
+      setConnectedUsers([]);
+    } finally {
+      setLoadingConnectedUsers(false);
+    }
+  };
+
+  // New function to start conversation
+  const handleStartConversation = async (connectedUser: ConnectedUser) => {
+    if (!user?.id) return;
+
+    try {
+      // Get or create conversation directly
+      const currentUserType = isTrainer() ? 'trainer' : 'user';
+      const conversationId = await getOrCreateConversation(
+        user.id,
+        currentUserType,
+        connectedUser.id,
+        connectedUser.type
+      );
+
+      if (!conversationId) {
+        Alert.alert('Error', 'Failed to create conversation');
+        return;
+      }
+
+      // Set up the conversation for chat view
+      const newConversation: Conversation = {
+        id: conversationId,
+        participant_id: connectedUser.id,
+        participant_name: connectedUser.name,
+        participant_username: connectedUser.name,
+        participant_type: connectedUser.type === 'trainer' ? 'trainer' : 'client',
+        last_message: '',
+        last_message_time: new Date().toISOString(),
+        unread_count: 0,
+        is_online: false,
+        avatar_url: connectedUser.avatar_url, // Include the avatar URL
+      };
+
+      // Close modal and open chat directly
+      setShowNewConversationModal(false);
+      setSelectedConversation(newConversation);
+      setShowChat(true);
+
+      // Fetch messages for this conversation
+      await fetchMessages(connectedUser.id);
+
+    } catch (error) {
+      console.error('Error starting chat:', error);
+      Alert.alert('Error', 'Failed to start conversation');
+    }
+  };
+
   const renderConversationItem = ({ item }: { item: Conversation }) => (
     <TouchableOpacity
       style={styles.conversationItem}
       onPress={() => openChat(item)}
     >
       <View style={styles.conversationAvatar}>
-        <Text style={styles.conversationInitials}>
-          {item.participant_name ? item.participant_name.split(' ').map(n => n[0]).join('') : 'U'}
-        </Text>
+        <ProfilePicture
+          avatarUrl={item.avatar_url}
+          fullName={item.participant_name}
+          size={50}
+        />
         {item.is_online && <View style={styles.onlineIndicator} />}
       </View>
       
@@ -491,7 +626,7 @@ export default function MessagesScreen() {
           timestamp: item.timestamp,
           is_read: item.is_read,
           message_type: item.message_type,
-          delivery_status: item.delivery_status,
+          delivery_status: item.delivery_status === 'failed' ? 'sent' : item.delivery_status, // Map 'failed' to 'sent'
           file_url: item.file_url,
           file_name: item.file_name,
           file_size: item.file_size,
@@ -510,12 +645,69 @@ export default function MessagesScreen() {
     );
   };
 
+  // New render function for connected user item
+  const renderConnectedUserItem = ({ item }: { item: ConnectedUser }) => (
+    <View style={styles.connectedUserItem}>
+      <View style={styles.connectedUserAvatar}>
+        <ProfilePicture
+          avatarUrl={item.avatar_url}
+          fullName={item.name}
+          size={48}
+        />
+        {item.is_online && <View style={styles.connectedUserOnlineIndicator} />}
+      </View>
+      
+      <View style={styles.connectedUserContent}>
+        <View style={styles.connectedUserHeader}>
+          <Text style={styles.connectedUserName}>{item.name}</Text>
+          <View style={styles.connectedUserTypeBadge}>
+            {item.type === 'trainer' ? (
+              <UserCheck size={14} color="#3498DB" />
+            ) : (
+              <User size={14} color="#27AE60" />
+            )}
+            <Text style={styles.connectedUserTypeText}>
+              {item.type === 'trainer' ? 'Trainer' : 'Member'}
+            </Text>
+          </View>
+        </View>
+        
+        {/* Online Status */}
+        <Text style={[
+          styles.connectedUserStatus,
+          { color: item.is_online ? '#10B981' : '#9CA3AF' }
+        ]}>
+          {item.is_online ? 'Online' : 'Offline'}
+        </Text>
+        
+        {item.type === 'trainer' && item.specialty && (
+          <Text style={styles.connectedUserSpecialty}>{item.specialty}</Text>
+        )}
+        
+        {item.type === 'trainer' && item.hourly_rate && (
+          <Text style={styles.connectedUserRate}>R{item.hourly_rate}/hr</Text>
+        )}
+      </View>
+      
+      <TouchableOpacity 
+        style={styles.startChatButton}
+        onPress={() => handleStartConversation(item)}
+      >
+        <Text style={styles.startChatButtonText}>Start Chat</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   if (showChat && selectedConversation) {
     return (
-      <View style={styles.chatContainer}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.chatContainer}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+      >
         {/* Chat Header */}
         <LinearGradient
-          colors={['#6C5CE7', '#A855F7']}
+          colors={['#FF6B35', '#FF8C42']}
           style={styles.chatHeader}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
@@ -527,9 +719,11 @@ export default function MessagesScreen() {
             
             <View style={styles.chatParticipantInfo}>
               <View style={styles.chatAvatar}>
-                <Text style={styles.chatAvatarInitials}>
-                  {selectedConversation.participant_name ? selectedConversation.participant_name.split(' ').map(n => n[0]).join('') : 'U'}
-                </Text>
+                <ProfilePicture
+                  avatarUrl={selectedConversation.avatar_url}
+                  fullName={selectedConversation.participant_name}
+                  size={40}
+                />
                 {selectedConversation.is_online && <View style={styles.chatOnlineIndicator} />}
               </View>
               <View>
@@ -554,27 +748,26 @@ export default function MessagesScreen() {
           style={styles.messagesList}
           inverted
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ flexGrow: 1 }}
         />
 
-                 {/* Message Input */}
-         <KeyboardAvoidingView
-           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-           style={styles.messageInputContainer}
-         >
+        {/* Message Input */}
+        <View style={styles.messageInputContainer}>
            {/* Attachment Options Modal */}
            {showAttachmentOptions && (
              <View style={styles.attachmentOptionsModal}>
                <View style={styles.attachmentOptionsContent}>
                  <TouchableOpacity style={styles.attachmentOption} onPress={takePhoto}>
-                   <Camera size={24} color="#6C5CE7" />
+                   <Camera size={24} color="#FF6B35" />
                    <Text style={styles.attachmentOptionText}>Take Photo</Text>
                  </TouchableOpacity>
                  <TouchableOpacity style={styles.attachmentOption} onPress={pickImage}>
-                   <ImageIcon size={24} color="#6C5CE7" />
+                   <Camera size={24} color="#FF6B35" />
                    <Text style={styles.attachmentOptionText}>Choose Photo</Text>
                  </TouchableOpacity>
                  <TouchableOpacity style={styles.attachmentOption} onPress={pickDocument}>
-                   <FileText size={24} color="#6C5CE7" />
+                   <FileText size={24} color="#FF6B35" />
                    <Text style={styles.attachmentOptionText}>Choose File</Text>
                  </TouchableOpacity>
                  <TouchableOpacity 
@@ -594,7 +787,7 @@ export default function MessagesScreen() {
                  <Image source={{ uri: selectedAttachment.uri }} style={styles.attachmentImage} />
                ) : (
                  <View style={styles.attachmentFile}>
-                   <FileText size={24} color="#6C5CE7" />
+                   <FileText size={24} color="#FF6B35" />
                    <Text style={styles.attachmentFileName} numberOfLines={1}>
                      {selectedAttachment.name}
                    </Text>
@@ -638,7 +831,26 @@ export default function MessagesScreen() {
                )}
              </TouchableOpacity>
            </View>
-         </KeyboardAvoidingView>
+         </View>
+       </KeyboardAvoidingView>
+     );
+   }
+
+  // Show loading while checking roles
+  if (rolesLoading) {
+    return (
+      <View style={styles.container}>
+        <LinearGradient
+          colors={['#FF6B35', '#FF8C42']}
+          style={styles.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
+          <Text style={styles.title}>Messages</Text>
+          <View style={styles.headerContent}>
+            <Text style={styles.subtitle}>Loading user permissions...</Text>
+          </View>
+        </LinearGradient>
       </View>
     );
   }
@@ -646,7 +858,7 @@ export default function MessagesScreen() {
   return (
     <View style={styles.container}>
       <LinearGradient
-        colors={['#6C5CE7', '#A855F7']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -673,10 +885,6 @@ export default function MessagesScreen() {
 
         {/* Conversations List */}
         <View style={styles.conversationsContainer}>
-          <Text style={styles.sectionTitle}>
-            {isTrainer() ? 'Client Conversations' : 'Trainer Conversations'}
-          </Text>
-          
           {loading ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateTitle}>Loading conversations...</Text>
@@ -687,10 +895,36 @@ export default function MessagesScreen() {
               <Text style={styles.emptyStateTitle}>No conversations yet</Text>
               <Text style={styles.emptyStateSubtitle}>
                 {isTrainer() 
-                  ? 'Start messaging your clients from the Client Dashboard'
-                  : 'Connect with trainers to start conversations'
+                  ? 'Tap the + button to start chatting with your connected clients'
+                  : 'Tap the + button to start chatting with your connected trainers'
                 }
               </Text>
+              
+              {/* Show connected users in empty state */}
+              {!loadingConnectedUsers && connectedUsers.length > 0 && (
+                <View style={styles.emptyStateConnectedUsers}>
+                  <Text style={styles.emptyStateConnectedUsersTitle}>
+                    Start a conversation with:
+                  </Text>
+                  <FlatList
+                    data={connectedUsers.slice(0, 3)} // Show only first 3
+                    renderItem={renderConnectedUserItem}
+                    keyExtractor={(item) => item.id}
+                    showsVerticalScrollIndicator={false}
+                    style={styles.emptyStateConnectedUsersList}
+                  />
+                  {connectedUsers.length > 3 && (
+                    <TouchableOpacity
+                      style={styles.viewAllConnectedUsersButton}
+                      onPress={() => setShowNewConversationModal(true)}
+                    >
+                      <Text style={styles.viewAllConnectedUsersButtonText}>
+                        View All ({connectedUsers.length})
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
             </View>
           ) : (
             <FlatList
@@ -704,9 +938,67 @@ export default function MessagesScreen() {
         </View>
       </View>
 
+      {/* Floating Action Button for New Conversation */}
+      <TouchableOpacity
+        style={styles.fab}
+        onPress={() => setShowNewConversationModal(true)}
+      >
+        <Plus size={24} color="#FFFFFF" />
+      </TouchableOpacity>
+
+      {/* New Conversation Modal */}
+      <Modal
+        visible={showNewConversationModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowNewConversationModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>New Conversation</Text>
+              <TouchableOpacity
+                onPress={() => setShowNewConversationModal(false)}
+                style={styles.modalCloseButton}
+              >
+                <Text style={styles.modalCloseButtonText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <Text style={styles.modalSubtitle}>
+              Choose someone to start chatting with:
+            </Text>
+            
+            {loadingConnectedUsers ? (
+              <View style={styles.modalLoadingContainer}>
+                <Text style={styles.modalLoadingText}>Loading connections...</Text>
+              </View>
+            ) : connectedUsers.length === 0 ? (
+              <View style={styles.modalEmptyContainer}>
+                <MessageCircle size={48} color="#D1D5DB" />
+                <Text style={styles.modalEmptyTitle}>No connections yet</Text>
+                <Text style={styles.modalEmptySubtitle}>
+                  {isTrainer() 
+                    ? 'Connect with clients first to start conversations'
+                    : 'Connect with trainers first to start conversations'
+                  }
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={connectedUsers}
+                renderItem={renderConnectedUserItem}
+                keyExtractor={(item) => item.id}
+                showsVerticalScrollIndicator={false}
+                style={styles.modalConnectedUsersList}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
-  }
+}
 
 const styles = StyleSheet.create({
   container: {
@@ -716,6 +1008,8 @@ const styles = StyleSheet.create({
   header: {
     padding: 20,
     paddingTop: 60,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   title: {
     fontSize: 28,
@@ -803,7 +1097,7 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 16,
@@ -855,7 +1149,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   unreadBadge: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     borderRadius: 10,
     minWidth: 20,
     height: 20,
@@ -905,7 +1199,7 @@ const styles = StyleSheet.create({
   chatAvatarInitials: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#6C5CE7',
+    color: '#FF6B35',
   },
   chatOnlineIndicator: {
     position: 'absolute',
@@ -935,6 +1229,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
     paddingVertical: 16,
+    minHeight: 0,
   },
   messageInputContainer: {
     backgroundColor: '#FFFFFF',
@@ -942,6 +1237,8 @@ const styles = StyleSheet.create({
     borderTopColor: '#E5E7EB',
     paddingHorizontal: 20,
     paddingVertical: 16,
+    position: 'relative',
+    zIndex: 1000,
   },
   messageInputWrapper: {
     flexDirection: 'row',
@@ -964,7 +1261,7 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
   sendButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     width: 36,
     height: 36,
     borderRadius: 18,
@@ -1049,5 +1346,209 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+
+  // New Conversation Modal Styles
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    width: '90%',
+    maxHeight: '80%',
+    padding: 20,
+    alignItems: 'center',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 15,
+  },
+  modalTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#2D3436',
+  },
+  modalCloseButton: {
+    padding: 5,
+  },
+  modalCloseButtonText: {
+    fontSize: 24,
+    color: '#6B7280',
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  modalLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalLoadingText: {
+    fontSize: 18,
+    color: '#6B7280',
+  },
+  modalEmptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  modalEmptyTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#6B7280',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  modalEmptySubtitle: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+
+  modalConnectedUsersList: {
+    width: '100%',
+  },
+  connectedUserItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  connectedUserAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#E0E7FF', // Light blue background for avatar
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 16,
+    position: 'relative',
+  },
+  connectedUserOnlineIndicator: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#10B981',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+  },
+  connectedUserContent: {
+    flex: 1,
+  },
+  connectedUserHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  connectedUserName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2D3436',
+  },
+  connectedUserTypeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E0F2FE', // Light blue background for badge
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  connectedUserTypeText: {
+    fontSize: 12,
+    color: '#3498DB', // Blue text for trainer
+    marginLeft: 4,
+  },
+  connectedUserSpecialty: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginBottom: 4,
+  },
+  connectedUserRate: {
+    fontSize: 14,
+    color: '#FF6B35', // Orange text for rate
+    fontWeight: '600',
+  },
+  connectedUserStatus: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginBottom: 4,
+  },
+  startChatButton: {
+    backgroundColor: '#FF6B35',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    alignSelf: 'flex-end',
+  },
+  startChatButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  viewAllConnectedUsersButton: {
+    marginTop: 15,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: '#E0F2FE',
+    borderRadius: 12,
+    alignSelf: 'center',
+  },
+  viewAllConnectedUsersButtonText: {
+    color: '#3498DB',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  emptyStateConnectedUsers: {
+    marginTop: 20,
+    width: '100%',
+  },
+  emptyStateConnectedUsersTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#6B7280',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  emptyStateConnectedUsersList: {
+    width: '100%',
+  },
+  fab: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#FF6B35',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 5,
   },
 });

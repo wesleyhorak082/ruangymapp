@@ -10,21 +10,18 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { 
   Users, 
   MessageCircle, 
   Calendar, 
-  Target, 
   Star, 
-  Clock, 
-  MapPin,
   X,
-  CheckCircle,
-  AlertCircle,
   Plus,
-  Send
+  Send,
+  Clock
 } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -35,7 +32,17 @@ import {
   AvailableTimeSlot,
   BookingRequest 
 } from '@/lib/trainerBookings';
+import { createBookingNotification } from '@/lib/notifications';
 import pushNotifications from '@/lib/pushNotifications';
+import ProfilePicture from '@/components/ProfilePicture';
+import StarRating from '@/components/StarRating';
+import { 
+  rateTrainer, 
+  getTrainerRatingStats, 
+  getUserTrainerRating,
+  type TrainerRatingStats 
+} from '@/lib/trainerRatings';
+import { getOrCreateConversation } from '@/lib/messaging';
 
 interface ConnectedTrainer {
   id: string;
@@ -51,25 +58,29 @@ interface ConnectedTrainer {
   last_message_time?: string;
   assigned_programs: number;
   upcoming_sessions: number;
+  userRating?: number; // User's rating for this trainer
+  ratingStats?: TrainerRatingStats; // Average rating and total ratings
 }
 
 export default function MyTrainers() {
   const { user } = useAuth();
   const [connectedTrainers, setConnectedTrainers] = useState<ConnectedTrainer[]>([]);
-  const [selectedTrainer, setSelectedTrainer] = useState<ConnectedTrainer | null>(null);
-  const [showTrainerModal, setShowTrainerModal] = useState(false);
-  const [showQuickMessageModal, setShowQuickMessageModal] = useState(false);
-  const [selectedTrainerForMessage, setSelectedTrainerForMessage] = useState<ConnectedTrainer | null>(null);
-  const [quickMessage, setQuickMessage] = useState('');
-  const [sendingMessage, setSendingMessage] = useState(false);
+
+
   const [loading, setLoading] = useState(true);
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
+  
+  // Rating state
+  const [ratingTrainer, setRatingTrainer] = useState<ConnectedTrainer | null>(null);
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [tempRating, setTempRating] = useState(0);
+  const [ratingReview, setRatingReview] = useState('');
+  const [submittingRating, setSubmittingRating] = useState(false);
   
   // Booking modal state
   const [showBookingModal, setShowBookingModal] = useState(false);
   const [selectedTrainerForBooking, setSelectedTrainerForBooking] = useState<ConnectedTrainer | null>(null);
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [selectedDuration, setSelectedDuration] = useState<30 | 60>(60);
   const [availableSlots, setAvailableSlots] = useState<AvailableTimeSlot[]>([]);
   const [selectedTimeSlot, setSelectedTimeSlot] = useState<AvailableTimeSlot | null>(null);
   const [bookingNotes, setBookingNotes] = useState('');
@@ -83,36 +94,35 @@ export default function MyTrainers() {
     if (user) {
       const channel = supabase
         .channel('messages')
-                 .on(
-           'postgres_changes',
-           {
-             event: 'INSERT',
-             schema: 'public',
-             table: 'messages',
-             filter: `receiver_id=eq.${user.id}`
-           },
-           (payload) => {
-             console.log('🔔 New message received:', payload);
-             const newMessage = payload.new as any;
-             
-             // Update unread count for the sender
-             setUnreadCounts(prev => ({
-               ...prev,
-               [newMessage.sender_id]: (prev[newMessage.sender_id] || 0) + 1
-             }));
-             
-             // Show notification (you can customize this)
-             // For now, using Alert, but you could implement a custom toast
-             Alert.alert(
-               'New Message',
-               `You have a new message from your trainer!`,
-               [{ text: 'OK' }]
-             );
-             
-             // You could also add push notifications here
-             // or integrate with your app's notification system
-           }
-         )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'messages',
+            filter: `receiver_id=eq.${user.id}`
+          },
+          (payload) => {
+            const newMessage = payload.new as any;
+            
+            // Update unread count for the sender
+            setUnreadCounts(prev => ({
+              ...prev,
+              [newMessage.sender_id]: (prev[newMessage.sender_id] || 0) + 1
+            }));
+            
+            // Show notification (you can customize this)
+            // For now, using Alert, but you could implement a custom toast
+            Alert.alert(
+              'New Message',
+              `You have a new message from your trainer!`,
+              [{ text: 'OK' }]
+            );
+            
+            // You could also add push notifications here
+            // or integrate with your app's notification system
+          }
+        )
         .on(
           'postgres_changes',
           {
@@ -122,8 +132,43 @@ export default function MyTrainers() {
             filter: `receiver_id=eq.${user.id}`
           },
           (payload) => {
-            console.log('🔔 Message updated:', payload);
             // Handle message updates (e.g., read status)
+          }
+        )
+        .subscribe();
+
+      // Set up real-time subscription for trainer profile updates
+      const trainerProfileChannel = supabase
+        .channel('trainer_profile_updates')
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'trainer_profiles'
+          },
+          (payload) => {
+            console.log('Trainer profile updated, refreshing connected trainers list:', payload.new);
+            // Refresh the connected trainers list when any trainer profile is updated
+            fetchConnectedTrainers();
+          }
+        )
+        .subscribe();
+
+      // Set up real-time subscription for user profile updates
+      const userProfileChannel = supabase
+        .channel('user_profile_updates')
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'user_profiles'
+          },
+          (payload) => {
+            console.log('User profile updated, refreshing connected trainers list:', payload.new);
+            // Refresh the connected trainers list when any user profile is updated
+            fetchConnectedTrainers();
           }
         )
         .subscribe();
@@ -131,6 +176,8 @@ export default function MyTrainers() {
       // Cleanup subscription on unmount
       return () => {
         supabase.removeChannel(channel);
+        supabase.removeChannel(trainerProfileChannel);
+        supabase.removeChannel(userProfileChannel);
       };
     }
   }, [user]);
@@ -140,14 +187,12 @@ export default function MyTrainers() {
     if (showBookingModal && selectedTrainerForBooking) {
       loadAvailableSlots();
     }
-  }, [showBookingModal, selectedTrainerForBooking, selectedDate, selectedDuration]);
+  }, [showBookingModal, selectedTrainerForBooking, selectedDate]);
 
   const fetchConnectedTrainers = async () => {
     try {
       setLoading(true);
       if (!user) return;
-
-      console.log('🔍 MyTrainers: Fetching connected trainers for user:', user.id);
 
       // Fetch approved trainer-user connections from the new table
       const { data: connections, error: connectionError } = await supabase
@@ -160,19 +205,6 @@ export default function MyTrainers() {
       if (connectionError) {
         console.error('Error fetching trainer connections:', connectionError);
         throw connectionError;
-      }
-
-      // Debug: Log the connections data
-      console.log('🔍 MyTrainers: Active trainer connections found:', connections?.length || 0);
-      if (connections && connections.length > 0) {
-        connections.forEach((conn, index) => {
-          console.log(`🔍 Connection ${index + 1}:`, {
-            id: conn.id,
-            trainer_id: conn.trainer_id,
-            user_id: conn.user_id,
-            connection_date: conn.connection_date
-          });
-        });
       }
 
       // Transform to ConnectedTrainer interface
@@ -198,28 +230,74 @@ export default function MyTrainers() {
        if (trainersData.length > 0) {
          const trainerIds = trainersData.map(trainer => trainer.id);
          
-         const { data: trainerProfiles, error: profilesError } = await supabase
+         // Fetch user profiles for basic info
+         const { data: userProfiles, error: userProfilesError } = await supabase
            .from('user_profiles')
-           .select('id, full_name, username, bio')
+           .select('id, full_name, username, bio, avatar_url')
            .in('id', trainerIds);
          
-         if (profilesError) {
-           console.error('Error fetching trainer profiles:', profilesError);
-         } else if (trainerProfiles) {
-           // Create a map for quick lookup
-           const profileMap = new Map();
-           trainerProfiles.forEach(profile => {
-             profileMap.set(profile.id, profile);
-           });
+         // Fetch trainer profiles for professional info (including hourly rates)
+         const { data: trainerProfiles, error: trainerProfilesError } = await supabase
+           .from('trainer_profiles')
+           .select('id, hourly_rate, specialty, rating, experience_years')
+           .in('id', trainerIds);
+         
+         if (userProfilesError) {
+           console.error('Error fetching user profiles:', userProfilesError);
+         }
+         
+         if (trainerProfilesError) {
+           console.error('Error fetching trainer profiles:', trainerProfilesError);
+         }
+         
+         // Create maps for quick lookup
+         const userProfileMap = new Map();
+         const trainerProfileMap = new Map();
+         
+         userProfiles?.forEach(profile => {
+           userProfileMap.set(profile.id, profile);
+         });
+         
+         trainerProfiles?.forEach(profile => {
+           trainerProfileMap.set(profile.id, profile);
+         });
+         
+         // Update trainer data with both user and trainer profile information
+         trainersData.forEach(trainer => {
+           const userProfile = userProfileMap.get(trainer.id);
+           const trainerProfile = trainerProfileMap.get(trainer.id);
            
-           // Update trainer data with profile information
-           trainersData.forEach(trainer => {
-             const profile = profileMap.get(trainer.id);
-             if (profile) {
-               trainer.full_name = profile.full_name || profile.username || 'Trainer';
-               trainer.username = profile.username || 'trainer';
+           if (userProfile) {
+             trainer.full_name = userProfile.full_name || userProfile.username || 'Trainer';
+             trainer.username = userProfile.username || 'trainer';
+             trainer.profile_image = userProfile.avatar_url;
+           }
+           
+           if (trainerProfile) {
+             trainer.hourly_rate = trainerProfile.hourly_rate || 50;
+             trainer.specialties = [trainerProfile.specialty || 'Personal Training'];
+             trainer.rating = trainerProfile.rating || 5;
+           }
+         });
+
+         // Fetch rating data for each trainer
+         for (const trainer of trainersData) {
+           try {
+             // Get user's rating for this trainer
+             const userRating = await getUserTrainerRating(trainer.id);
+             trainer.userRating = userRating;
+             
+             // Get average rating stats for this trainer
+             const ratingStats = await getTrainerRatingStats(trainer.id);
+             trainer.ratingStats = ratingStats || undefined;
+             
+             // Update the display rating to show the average from all users
+             if (ratingStats && ratingStats.average_rating > 0) {
+               trainer.rating = ratingStats.average_rating;
              }
-           });
+           } catch (error) {
+             console.error(`Error fetching rating data for trainer ${trainer.id}:`, error);
+           }
          }
          
          // Fetch last messages for each trainer
@@ -311,8 +389,8 @@ export default function MyTrainers() {
 
   const getStatusColor = (status: ConnectedTrainer['connection_status']) => {
     switch (status) {
-      case 'active':
-        return '#10B981';
+              case 'active':
+          return '#FF6B35';
       case 'approved':
         return '#F59E0B';
       case 'pending':
@@ -336,111 +414,86 @@ export default function MyTrainers() {
   };
 
   const handleMessageTrainer = async (trainer: ConnectedTrainer) => {
-    // Mark messages as read first
+    if (!user?.id) return;
+
     try {
-      const { data: conversationData } = await supabase
-        .rpc('get_or_create_conversation', {
-          p_user1_id: user!.id,
-          p_user1_type: 'user',
-          p_user2_id: trainer.id,
-          p_user2_type: 'trainer'
-        });
-      
-      if (conversationData) {
-        await supabase.rpc('mark_messages_as_read', {
-          p_conversation_id: conversationData,
-          p_user_id: user!.id
-        });
-        
-        // Clear unread count for this trainer
-        setUnreadCounts(prev => ({
-          ...prev,
-          [trainer.id]: 0
-        }));
+      // Get or create conversation directly
+      const conversationId = await getOrCreateConversation(
+        user.id,
+        'user',
+        trainer.id,
+        'trainer'
+      );
+
+      if (!conversationId) {
+        Alert.alert('Error', 'Failed to create conversation');
+        return;
       }
+
+      // Navigate to messages tab with the conversation
+      router.push('/(tabs)/messages');
+      
+      // Note: The conversation will be available in the messages tab
+      // The user can start chatting immediately
+      
     } catch (error) {
-      console.error('Error marking messages as read:', error);
+      console.error('Error starting conversation:', error);
+      Alert.alert('Error', 'Failed to start conversation');
     }
-    
-    // Show quick message modal
-    setSelectedTrainerForMessage(trainer);
-    setQuickMessage('');
-    setShowQuickMessageModal(true);
   };
 
   const handleBookSession = (trainer: ConnectedTrainer) => {
     setSelectedTrainerForBooking(trainer);
     setSelectedDate(new Date());
-    setSelectedDuration(60);
     setSelectedTimeSlot(null);
     setBookingNotes('');
     setAvailableSlots([]);
     setShowBookingModal(true);
   };
 
-  const handleViewPrograms = (trainer: ConnectedTrainer) => {
-    // Navigate to programs screen
-    Alert.alert('Programs', `Viewing programs from ${trainer.full_name}`);
+  // Rating functions
+  const handleRateTrainer = (trainer: ConnectedTrainer) => {
+    setRatingTrainer(trainer);
+    setTempRating(trainer.userRating || 0);
+    setRatingReview('');
+    setShowRatingModal(true);
   };
 
-  const handleSendQuickMessage = async () => {
-    if (!selectedTrainerForMessage || !quickMessage.trim() || !user) return;
-    
+  const submitRating = async () => {
+    if (!ratingTrainer || tempRating === 0) {
+      Alert.alert('Error', 'Please select a rating');
+      return;
+    }
+
+    setSubmittingRating(true);
     try {
-      setSendingMessage(true);
+      const result = await rateTrainer(ratingTrainer.id, tempRating, ratingReview);
       
-      // Get or create conversation between user and trainer
-      const { data: conversationData, error: conversationError } = await supabase
-        .rpc('get_or_create_conversation', {
-          p_user1_id: user.id,
-          p_user1_type: 'user',
-          p_user2_id: selectedTrainerForMessage.id,
-          p_user2_type: 'trainer'
-        });
-      
-      if (conversationError) {
-        console.error('Error creating conversation:', conversationError);
-        throw new Error('Failed to create conversation');
+      if (result.success) {
+        Alert.alert('Success', 'Rating submitted successfully!');
+        setShowRatingModal(false);
+        // Refresh the trainer list to show updated ratings
+        fetchConnectedTrainers();
+      } else {
+        Alert.alert('Error', result.error || 'Failed to submit rating');
       }
-      
-      if (!conversationData) {
-        throw new Error('No conversation ID returned');
-      }
-      
-      // Send the message
-      const { data: messageData, error: messageError } = await supabase
-        .from('messages')
-        .insert({
-          conversation_id: conversationData,
-          sender_id: user.id,
-          receiver_id: selectedTrainerForMessage.id,
-          content: quickMessage.trim(),
-          message_type: 'text'
-        })
-        .select()
-        .single();
-      
-      if (messageError) {
-        console.error('Error sending message:', messageError);
-        throw new Error('Failed to send message');
-      }
-      
-      // Success! Show confirmation and close modal
-      Alert.alert('Success', `Message sent to ${selectedTrainerForMessage.full_name}!`);
-      setShowQuickMessageModal(false);
-      setQuickMessage('');
-      setSelectedTrainerForMessage(null);
-      
-      // Optionally refresh the trainer list to show updated last message
-      // fetchConnectedTrainers();
-      
     } catch (error) {
-      console.error('Error in handleSendQuickMessage:', error);
-      Alert.alert('Error', 'Failed to send message. Please try again.');
+      console.error('Error submitting rating:', error);
+      Alert.alert('Error', 'Failed to submit rating');
     } finally {
-      setSendingMessage(false);
+      setSubmittingRating(false);
     }
   };
+
+  const cancelRating = () => {
+    setShowRatingModal(false);
+    setRatingTrainer(null);
+    setTempRating(0);
+    setRatingReview('');
+  };
+
+
+
 
   const handleDisconnect = (trainer: ConnectedTrainer) => {
     Alert.alert(
@@ -460,7 +513,7 @@ export default function MyTrainers() {
     );
   };
 
-  // Load available time slots when date or duration changes
+  // Load available time slots when date changes
   const loadAvailableSlots = async () => {
     if (!selectedTrainerForBooking) return;
     
@@ -469,7 +522,7 @@ export default function MyTrainers() {
       const slots = await getTrainerAvailableSlots(
         selectedTrainerForBooking.id,
         selectedDate.toISOString().split('T')[0],
-        selectedDuration
+        60 // All sessions are 60 minutes
       );
       setAvailableSlots(slots);
       setSelectedTimeSlot(null);
@@ -487,11 +540,18 @@ export default function MyTrainers() {
     
     setCreatingBooking(true);
     try {
+      // Create booking data with the new structure
+      const [hours, minutes] = selectedTimeSlot.start_time.split(':');
+      const endHours = parseInt(hours) + 1;
+      const endTime = `${endHours.toString().padStart(2, '0')}:${minutes}`;
+      
       const bookingData: BookingRequest = {
         trainer_id: selectedTrainerForBooking.id,
         session_date: selectedDate.toISOString().split('T')[0],
         start_time: selectedTimeSlot.start_time,
-        duration_minutes: selectedDuration,
+        end_time: endTime,
+        duration_minutes: 60,
+        session_type: 'personal_training',
         notes: bookingNotes.trim() || undefined
       };
 
@@ -500,20 +560,21 @@ export default function MyTrainers() {
       // Show success message
       Alert.alert(
         'Booking Request Sent!',
-        `Your ${selectedDuration}-minute session request has been sent to ${selectedTrainerForBooking.full_name}. You'll be notified when they respond.`,
+        `Your 60-minute session request has been sent to ${selectedTrainerForBooking.full_name}. You'll be notified when they respond.`,
         [{ text: 'OK', onPress: () => setShowBookingModal(false) }]
       );
 
-      // Send notification to trainer (this would be handled by the backend in a real app)
+      // Create notification for trainer
       try {
-        await pushNotifications.showBookingRequestNotification(
+        await createBookingNotification(
+          selectedTrainerForBooking.id,
           user.user_metadata?.full_name || 'A user',
           selectedDate.toLocaleDateString(),
           selectedTimeSlot.start_time,
-          selectedDuration
+          60
         );
       } catch (error) {
-        console.error('Error sending notification:', error);
+        console.error('Error creating notification:', error);
       }
 
     } catch (error) {
@@ -548,7 +609,7 @@ export default function MyTrainers() {
     return (
       <View style={styles.container}>
         <LinearGradient
-          colors={['#00B894', '#00CEC9']}
+          colors={['#FF6B35', '#FF8C42']}
           style={styles.header}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
@@ -566,7 +627,7 @@ export default function MyTrainers() {
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <LinearGradient
-        colors={['#00B894', '#00CEC9']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -582,18 +643,8 @@ export default function MyTrainers() {
              style={styles.quickActionButton}
              onPress={() => router.push('/trainer-discovery')}
            >
-             <Plus size={20} color="#6C5CE7" />
+             <Plus size={20} color="#FFFFFF" />
              <Text style={styles.quickActionText}>Find New Trainer</Text>
-           </TouchableOpacity>
-           
-           <TouchableOpacity
-             style={[styles.quickActionButton, { marginLeft: 12 }]}
-             onPress={() => {
-               setLoading(true);
-               fetchConnectedTrainers();
-             }}
-           >
-             <Text style={styles.quickActionText}>🔄 Refresh</Text>
            </TouchableOpacity>
          </View>
 
@@ -625,9 +676,11 @@ export default function MyTrainers() {
                   <View style={styles.trainerHeader}>
                     <View style={styles.trainerInfo}>
                       <View style={styles.trainerImageContainer}>
-                        <Text style={styles.trainerInitials}>
-                          {trainer.full_name.split(' ').map(n => n[0]).join('')}
-                        </Text>
+                        <ProfilePicture
+                          avatarUrl={trainer.profile_image}
+                          fullName={trainer.full_name}
+                          size={50}
+                        />
                       </View>
                       <View style={styles.trainerDetails}>
                         <Text style={styles.trainerName}>{trainer.full_name}</Text>
@@ -654,21 +707,24 @@ export default function MyTrainers() {
 
                   <View style={styles.trainerStats}>
                     <View style={styles.statItem}>
-                      <Star size={16} color="#F59E0B" />
-                      <Text style={styles.statText}>{trainer.rating}</Text>
+                      <TouchableOpacity 
+                        style={styles.ratingContainer}
+                        onPress={() => handleRateTrainer(trainer)}
+                      >
+                        <StarRating
+                          rating={trainer.rating}
+                          size={16}
+                          readonly={false}
+                          showRating={true}
+                          showCount={true}
+                          totalRatings={trainer.ratingStats?.total_ratings || 0}
+                        />
+                        <Text style={styles.ratingLabel}>Tap to rate</Text>
+                      </TouchableOpacity>
                     </View>
                     <View style={styles.statItem}>
-                      <Target size={16} color="#6C5CE7" />
-                      <Text style={styles.statText}>{trainer.assigned_programs}</Text>
-                      <Text style={styles.statLabel}>Programs</Text>
-                    </View>
-                    <View style={styles.statItem}>
-                      <Calendar size={16} color="#10B981" />
-                      <Text style={styles.statText}>{trainer.upcoming_sessions}</Text>
-                      <Text style={styles.statLabel}>Sessions</Text>
-                    </View>
-                    <View style={styles.statItem}>
-                      <Text style={styles.hourlyRate}>${trainer.hourly_rate}/hr</Text>
+                      <Clock size={16} color="#6B7280" />
+                      <Text style={styles.statText}>R{trainer.hourly_rate}/hr</Text>
                     </View>
                   </View>
 
@@ -682,53 +738,33 @@ export default function MyTrainers() {
                     </View>
                   )}
 
-                  <View style={styles.trainerActions}>
-                                         <TouchableOpacity
-                       style={styles.actionButton}
-                       onPress={() => handleMessageTrainer(trainer)}
-                     >
-                       <View style={styles.messageButtonContainer}>
-                         <MessageCircle size={16} color="#6C5CE7" />
-                         <Text style={styles.actionText}>Message</Text>
-                         {unreadCounts[trainer.id] > 0 && (
-                           <View style={styles.unreadBadge}>
-                             <Text style={styles.unreadBadgeText}>
-                               {unreadCounts[trainer.id]}
-                             </Text>
-                           </View>
-                         )}
-                       </View>
-                     </TouchableOpacity>
-                    
-                    {trainer.connection_status === 'active' && (
-                      <>
-                        <TouchableOpacity
-                          style={styles.actionButton}
-                          onPress={() => handleBookSession(trainer)}
-                        >
-                          <Calendar size={16} color="#10B981" />
-                          <Text style={styles.actionText}>Book Session</Text>
-                        </TouchableOpacity>
-                        
-                        <TouchableOpacity
-                          style={styles.actionButton}
-                          onPress={() => handleViewPrograms(trainer)}
-                        >
-                          <Target size={16} color="#F59E0B" />
-                          <Text style={styles.actionText}>Programs</Text>
-                        </TouchableOpacity>
-                      </>
-                    )}
-                    
+                                    <View style={styles.trainerActions}>
                     <TouchableOpacity
                       style={styles.actionButton}
-                      onPress={() => {
-                        setSelectedTrainer(trainer);
-                        setShowTrainerModal(true);
-                      }}
+                      onPress={() => handleMessageTrainer(trainer)}
                     >
-                      <Text style={styles.actionText}>View Profile</Text>
+                      <View style={styles.messageButtonContainer}>
+                        <MessageCircle size={16} color="#FF6B35" />
+                        <Text style={styles.actionText}>Message</Text>
+                        {unreadCounts[trainer.id] > 0 && (
+                          <View style={styles.unreadBadge}>
+                            <Text style={styles.unreadBadgeText}>
+                              {unreadCounts[trainer.id]}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
                     </TouchableOpacity>
+                    
+                    {trainer.connection_status === 'active' && (
+                      <TouchableOpacity
+                        style={styles.actionButton}
+                        onPress={() => handleBookSession(trainer)}
+                      >
+                        <Calendar size={16} color="#FF6B35" />
+                        <Text style={styles.actionText}>Book Session</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
 
                   <TouchableOpacity
@@ -744,163 +780,9 @@ export default function MyTrainers() {
         </View>
       </View>
 
-      {/* Trainer Profile Modal */}
-      <Modal
-        visible={showTrainerModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowTrainerModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            {selectedTrainer && (
-              <>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>{selectedTrainer.full_name}</Text>
-                  <TouchableOpacity
-                    style={styles.closeButton}
-                    onPress={() => setShowTrainerModal(false)}
-                  >
-                    <X size={24} color="#6B7280" />
-                  </TouchableOpacity>
-                </View>
 
-                <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
-                  <View style={styles.modalSection}>
-                    <Text style={styles.modalSectionTitle}>Connection Details</Text>
-                    <View style={styles.connectionDetails}>
-                      <View style={styles.connectionDetail}>
-                        <Text style={styles.connectionDetailLabel}>Status:</Text>
-                        <View style={styles.connectionStatus}>
-                          <View style={[
-                            styles.statusIndicator,
-                            { backgroundColor: getStatusColor(selectedTrainer.connection_status) }
-                          ]} />
-                          <Text style={styles.connectionStatusText}>
-                            {getStatusText(selectedTrainer.connection_status)}
-                          </Text>
-                        </View>
-                      </View>
-                      <View style={styles.connectionDetail}>
-                        <Text style={styles.connectionDetailLabel}>Connected since:</Text>
-                        <Text style={styles.connectionDetailValue}>
-                          {new Date(selectedTrainer.connection_date).toLocaleDateString()}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
 
-                  <View style={styles.modalSection}>
-                    <Text style={styles.modalSectionTitle}>Specialties</Text>
-                    <View style={styles.modalSpecialties}>
-                      {selectedTrainer.specialties.map((specialty, index) => (
-                        <View key={index} style={styles.modalSpecialtyTag}>
-                          <Text style={styles.modalSpecialtyText}>{specialty}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
 
-                  <View style={styles.modalSection}>
-                    <Text style={styles.modalSectionTitle}>Current Stats</Text>
-                    <View style={styles.modalStats}>
-                      <View style={styles.modalStatItem}>
-                        <Text style={styles.modalStatNumber}>{selectedTrainer.assigned_programs}</Text>
-                        <Text style={styles.modalStatLabel}>Assigned Programs</Text>
-                      </View>
-                      <View style={styles.modalStatItem}>
-                        <Text style={styles.modalStatNumber}>{selectedTrainer.upcoming_sessions}</Text>
-                        <Text style={styles.modalStatLabel}>Upcoming Sessions</Text>
-                      </View>
-                    </View>
-                  </View>
-                </ScrollView>
-
-                <View style={styles.modalActions}>
-                  <TouchableOpacity
-                    style={styles.modalActionButton}
-                    onPress={() => {
-                      setShowTrainerModal(false);
-                      handleMessageTrainer(selectedTrainer);
-                    }}
-                  >
-                    <MessageCircle size={20} color="#FFFFFF" />
-                    <Text style={styles.modalActionButtonText}>Send Message</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Quick Message Modal */}
-      <Modal
-        visible={showQuickMessageModal}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowQuickMessageModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.keyboardAvoidingView}
-          >
-            <View style={styles.quickMessageModalContent}>
-              <LinearGradient
-                colors={['#6C5CE7', '#A855F7']}
-                style={styles.quickMessageModalHeader}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-              >
-                <View style={styles.headerContent}>
-                  <MessageCircle size={24} color="#FFFFFF" />
-                  <Text style={styles.quickMessageModalTitle}>Quick Message</Text>
-                  <TouchableOpacity 
-                    onPress={() => setShowQuickMessageModal(false)} 
-                    style={styles.closeButton}
-                  >
-                    <X size={24} color="#FFFFFF" />
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.clientName}>To: {selectedTrainerForMessage?.full_name}</Text>
-              </LinearGradient>
-
-              <View style={styles.quickMessageModalBody}>
-                <Text style={styles.messageLabel}>Message:</Text>
-                <TextInput
-                  style={styles.quickMessageInput}
-                  placeholder="Type your message..."
-                  value={quickMessage}
-                  onChangeText={setQuickMessage}
-                  multiline
-                  maxLength={500}
-                  textAlignVertical="top"
-                />
-                
-                <View style={styles.messageActions}>
-                  <TouchableOpacity
-                    style={[
-                      styles.sendButton,
-                      (!quickMessage.trim() || sendingMessage) && styles.sendButtonDisabled
-                    ]}
-                    onPress={handleSendQuickMessage}
-                    disabled={!quickMessage.trim() || sendingMessage}
-                  >
-                    <Send size={20} color={quickMessage.trim() && !sendingMessage ? "#FFFFFF" : "#9CA3AF"} />
-                    <Text style={[
-                      styles.sendButtonText, 
-                      (!quickMessage.trim() || sendingMessage) && styles.sendButtonTextDisabled
-                    ]}>
-                      {sendingMessage ? 'Sending...' : 'Send'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
 
       {/* Booking Modal */}
       <Modal
@@ -912,7 +794,7 @@ export default function MyTrainers() {
         <View style={styles.modalOverlay}>
           <View style={styles.bookingModalContent}>
             <LinearGradient
-              colors={['#10B981', '#059669']}
+              colors={['#FF6B35', '#FF8C42']}
               style={styles.bookingModalHeader}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
@@ -931,41 +813,6 @@ export default function MyTrainers() {
             </LinearGradient>
 
             <ScrollView style={styles.bookingModalBody} showsVerticalScrollIndicator={false}>
-              {/* Session Duration Selection */}
-              <View style={styles.bookingSection}>
-                <Text style={styles.bookingSectionTitle}>Session Duration</Text>
-                <View style={styles.durationButtons}>
-                  <TouchableOpacity
-                    style={[
-                      styles.durationButton,
-                      selectedDuration === 30 && styles.durationButtonActive
-                    ]}
-                    onPress={() => setSelectedDuration(30)}
-                  >
-                    <Text style={[
-                      styles.durationButtonText,
-                      selectedDuration === 30 && styles.durationButtonTextActive
-                    ]}>
-                      30 min
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      styles.durationButton,
-                      selectedDuration === 60 && styles.durationButtonActive
-                    ]}
-                    onPress={() => setSelectedDuration(60)}
-                  >
-                    <Text style={[
-                      styles.durationButtonText,
-                      selectedDuration === 60 && styles.durationButtonTextActive
-                    ]}>
-                      60 min
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
               {/* Date Selection */}
               <View style={styles.bookingSection}>
                 <Text style={styles.bookingSectionTitle}>Select Date</Text>
@@ -1011,7 +858,7 @@ export default function MyTrainers() {
                 ) : availableSlots.length === 0 ? (
                   <View style={styles.noSlotsAvailable}>
                     <Text style={styles.noSlotsText}>No available times for this date</Text>
-                    <Text style={styles.noSlotsSubtext}>Try selecting a different date or duration</Text>
+                    <Text style={styles.noSlotsSubtext}>Try selecting a different date</Text>
                   </View>
                 ) : (
                   <View style={styles.timeSlotsGrid}>
@@ -1070,6 +917,74 @@ export default function MyTrainers() {
           </View>
         </View>
       </Modal>
+
+      {/* Rating Modal */}
+      <Modal
+        visible={showRatingModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={cancelRating}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Rate {ratingTrainer?.full_name}</Text>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={cancelRating}
+              >
+                <X size={24} color="#6B7280" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalBody}>
+              <Text style={styles.ratingSubtitle}>
+                How would you rate your experience with this trainer?
+              </Text>
+
+              <View style={styles.ratingSection}>
+                <StarRating
+                  rating={tempRating}
+                  onRatingChange={setTempRating}
+                  size={32}
+                  readonly={false}
+                  showRating={true}
+                />
+              </View>
+
+              <View style={styles.reviewSection}>
+                <Text style={styles.reviewLabel}>Review (Optional)</Text>
+                <TextInput
+                  style={styles.reviewInput}
+                  placeholder="Share your experience with this trainer..."
+                  value={ratingReview}
+                  onChangeText={setRatingReview}
+                  multiline
+                  numberOfLines={4}
+                />
+              </View>
+            </View>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={cancelRating}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.submitButton, (tempRating === 0 || submittingRating) && styles.submitButtonDisabled]}
+                onPress={submitRating}
+                disabled={tempRating === 0 || submittingRating}
+              >
+                <Text style={styles.submitButtonText}>
+                  {submittingRating ? 'Submitting...' : 'Submit Rating'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -1082,6 +997,8 @@ const styles = StyleSheet.create({
   header: {
     padding: 20,
     paddingTop: 60,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   title: {
     fontSize: 28,
@@ -1099,11 +1016,9 @@ const styles = StyleSheet.create({
   },
   quickActionsContainer: {
     marginBottom: 24,
-    flexDirection: 'row',
-    gap: 12,
   },
   quickActionButton: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1116,7 +1031,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   quickActionText: {
-    color: '#6C5CE7',
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 8,
@@ -1154,7 +1069,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   emptyStateButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 8,
@@ -1192,7 +1107,7 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -1275,7 +1190,7 @@ const styles = StyleSheet.create({
   hourlyRate: {
     fontSize: 14,
     fontWeight: 'bold',
-    color: '#10B981',
+    color: '#FF6B35',
   },
   lastMessageContainer: {
     backgroundColor: '#F8F9FA',
@@ -1334,123 +1249,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  modalContent: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    width: '90%',
-    maxHeight: '85%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 24,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#2D3436',
-    flex: 1,
-  },
-  modalBody: {
-    padding: 24,
-    paddingTop: 16,
-  },
-  modalSection: {
-    marginBottom: 24,
-  },
-  modalSectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#2D3436',
-    marginBottom: 12,
-  },
-  connectionDetails: {
-    gap: 12,
-  },
-  connectionDetail: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  connectionDetailLabel: {
-    fontSize: 14,
-    color: '#6B7280',
-    fontWeight: '500',
-  },
-  connectionDetailValue: {
-    fontSize: 14,
-    color: '#2D3436',
-    fontWeight: '600',
-  },
-  connectionStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  connectionStatusText: {
-    fontSize: 14,
-    color: '#2D3436',
-    fontWeight: '600',
-    marginLeft: 8,
-  },
-  modalSpecialties: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  modalSpecialtyTag: {
-    backgroundColor: '#F3F4F6',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-  },
-  modalSpecialtyText: {
-    fontSize: 14,
-    color: '#374151',
-    fontWeight: '500',
-  },
-  modalStats: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  modalStatItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  modalStatNumber: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#6C5CE7',
-    marginBottom: 4,
-  },
-  modalStatLabel: {
-    fontSize: 12,
-    color: '#6B7280',
-    textAlign: 'center',
-  },
-  modalActions: {
-    padding: 24,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-  },
-  modalActionButton: {
-    backgroundColor: '#6C5CE7',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 16,
-    borderRadius: 12,
-  },
-  modalActionButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-    marginLeft: 8,
-  },
+
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -1527,7 +1326,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   sendButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 24,
@@ -1591,11 +1390,7 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     flex: 1,
   },
-  trainerName: {
-    fontSize: 16,
-    color: '#E5E7EB',
-    marginLeft: 36,
-  },
+
   bookingModalBody: {
     padding: 20,
     maxHeight: '70%',
@@ -1609,32 +1404,7 @@ const styles = StyleSheet.create({
     color: '#2D3436',
     marginBottom: 12,
   },
-  durationButtons: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  durationButton: {
-    flex: 1,
-    backgroundColor: '#F3F4F6',
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-    alignItems: 'center',
-  },
-  durationButtonActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
-  },
-  durationButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#6B7280',
-  },
-  durationButtonTextActive: {
-    color: '#FFFFFF',
-  },
+
   dateSelector: {
     maxHeight: 80,
   },
@@ -1653,8 +1423,8 @@ const styles = StyleSheet.create({
     borderColor: '#E5E7EB',
   },
   dateOptionActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
+    backgroundColor: '#FF6B35',
+    borderColor: '#FF6B35',
   },
   dateOptionText: {
     fontSize: 12,
@@ -1712,8 +1482,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   timeSlotOptionActive: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
+    backgroundColor: '#FF6B35',
+    borderColor: '#FF6B35',
   },
   timeSlotText: {
     fontSize: 14,
@@ -1739,7 +1509,7 @@ const styles = StyleSheet.create({
     borderTopColor: '#E5E7EB',
   },
   bookButton: {
-    backgroundColor: '#10B981',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1759,5 +1529,100 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginLeft: 8,
+  },
+  ratingContainer: {
+    alignItems: 'center',
+  },
+  ratingLabel: {
+    fontSize: 10,
+    color: '#6B7280',
+    marginTop: 4,
+  },
+  // Rating Modal Styles
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '80%',
+    marginTop: 'auto',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    backgroundColor: '#FF6B35',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    flex: 1,
+    textAlign: 'center',
+  },
+  modalBody: {
+    padding: 20,
+  },
+  ratingSubtitle: {
+    fontSize: 16,
+    color: '#2D3436',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  ratingSection: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  reviewSection: {
+    marginBottom: 20,
+  },
+  reviewLabel: {
+    fontSize: 14,
+    color: '#6B7280',
+    marginBottom: 8,
+  },
+  reviewInput: {
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
+    color: '#2D3436',
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  cancelButton: {
+    backgroundColor: '#F3F4F6',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+  },
+  cancelButtonText: {
+    color: '#2D3436',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  submitButton: {
+    backgroundColor: '#FF6B35',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+  },
+  submitButtonDisabled: {
+    backgroundColor: '#9CA3AF',
+  },
+  submitButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

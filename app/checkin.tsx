@@ -81,7 +81,7 @@ export default function CheckinScreen() {
     return (
       <View style={styles.container}>
         <LinearGradient
-          colors={['#E17055', '#FDCB6E']}
+          colors={['#FF6B35', '#FF8C42']}
           style={styles.header}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
@@ -99,7 +99,7 @@ export default function CheckinScreen() {
           <QrCode size={64} color="#E17055" />
           <Text style={styles.permissionTitle}>Camera Permission Required</Text>
           <Text style={styles.permissionText}>
-            We need camera access to scan the gym's QR code for check-in
+            We need camera access to scan the gym&apos;s QR code for check-in
           </Text>
           <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
             <Text style={styles.permissionButtonText}>Grant Permission</Text>
@@ -113,7 +113,7 @@ export default function CheckinScreen() {
     return (
       <View style={styles.container}>
         <LinearGradient
-          colors={['#00B894', '#00CEC9']}
+          colors={['#FF6B35', '#FF8C42']}
           style={styles.successContainer}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
@@ -138,12 +138,12 @@ export default function CheckinScreen() {
 
   return (
     <View style={styles.container}>
-      <LinearGradient
-        colors={['#E17055', '#FDCB6E']}
-        style={styles.header}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      >
+              <LinearGradient
+          colors={['#FF6B35', '#FF8C42']}
+          style={styles.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
         <TouchableOpacity 
           style={styles.backButton}
           onPress={() => router.back()}
@@ -151,7 +151,7 @@ export default function CheckinScreen() {
           <ArrowLeft size={24} color="#FFFFFF" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Gym Check-in</Text>
-        <Text style={styles.headerSubtitle}>Scan the gym's QR code</Text>
+        <Text style={styles.headerSubtitle}>Scan the gym&apos;s QR code</Text>
       </LinearGradient>
 
       <View style={styles.cameraContainer}>

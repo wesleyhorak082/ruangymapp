@@ -15,8 +15,6 @@ import {
   Target, 
   Users, 
   Award,
-  TrendingUp,
-  Calendar,
   ArrowLeft
 } from 'lucide-react-native';
 import { router } from 'expo-router';
@@ -96,7 +94,7 @@ export default function GamificationScreen() {
     switch (category) {
       case 'workout': return '#4ECDC4';
       case 'streak': return '#FF6B35';
-      case 'goal': return '#6C5CE7';
+      case 'goal': return '#FF6B35';
       case 'special': return '#F7931E';
       default: return '#95A5A6';
     }
@@ -106,7 +104,7 @@ export default function GamificationScreen() {
     switch (category) {
       case 'workout': return <Target size={16} color="#4ECDC4" />;
       case 'streak': return <Zap size={16} color="#FF6B35" />;
-      case 'goal': return <Trophy size={16} color="#6C5CE7" />;
+      case 'goal': return <Trophy size={16} color="#FF6B35" />;
       case 'special': return <Star size={16} color="#F7931E" />;
       default: return <Award size={16} color="#95A5A6" />;
     }
@@ -115,7 +113,7 @@ export default function GamificationScreen() {
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <LinearGradient
-        colors={['#6C5CE7', '#A855F7']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -303,6 +301,8 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingTop: 60,
     alignItems: 'center',
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   backButton: {
     position: 'absolute',
@@ -382,7 +382,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   activeTab: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
   },
   tabText: {
     fontSize: 14,
@@ -604,7 +604,7 @@ const styles = StyleSheet.create({
   userPoints: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#6C5CE7',
+    color: '#FF6B35',
     marginBottom: 2,
   },
   userLevel: {

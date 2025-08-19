@@ -1,4 +1,6 @@
 import { supabase } from './supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isNotificationEnabled } from './notificationPreferences';
 
 export interface ConnectionRequest {
   id: string;
@@ -12,8 +14,13 @@ export interface ConnectionRequest {
   user_profile?: {
     email: string;
   };
-  trainer_profile?: {
-    email: string;
+  user_profiles?: {
+    full_name: string | null;
+    username: string | null;
+  };
+  trainer_profiles?: {
+    full_name: string | null;
+    username: string | null;
   };
 }
 
@@ -49,6 +56,8 @@ export async function createConnectionRequest(
       };
     }
 
+
+
     const { data, error } = await supabase
       .from('connection_requests')
       .insert({
@@ -62,6 +71,8 @@ export async function createConnectionRequest(
       console.error('❌ createConnectionRequest: Insert error:', error);
       throw error;
     }
+
+
 
     // Create notification for trainer
     const notificationResult = await createNotification(
@@ -79,21 +90,86 @@ export async function createConnectionRequest(
   }
 }
 
+// Create a booking notification for trainers
+export async function createBookingNotification(
+  trainerId: string,
+  userName: string,
+  sessionDate: string,
+  sessionTime: string,
+  duration: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('User not authenticated');
+
+    const { error } = await supabase
+      .from('notifications')
+      .insert({
+        user_id: trainerId,
+        type: 'session_reminder',
+        title: 'New Session Booking',
+        message: `${userName} has booked a ${duration}-minute session on ${sessionDate} at ${sessionTime}`,
+        data: { 
+          user_id: user.id,
+          session_date: sessionDate,
+          session_time: sessionTime,
+          duration: duration
+        },
+        is_read: false
+      });
+
+    if (error) {
+      console.error('❌ createBookingNotification: Insert error:', error);
+      throw error;
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Error creating booking notification:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
 // Get connection requests for a trainer
 export async function getTrainerConnectionRequests(): Promise<ConnectionRequest[]> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('User not authenticated');
 
-    const { data, error } = await supabase
+    // First get the connection requests
+    const { data: requests, error: requestsError } = await supabase
       .from('connection_requests')
       .select('*')
       .eq('trainer_id', user.id)
       .eq('status', 'pending')
       .order('created_at', { ascending: false });
 
-    if (error) throw error;
-    return data || [];
+    if (requestsError) throw requestsError;
+    if (!requests || requests.length === 0) return [];
+
+    // Then get user profiles separately to avoid foreign key issues
+    const userIds = [...new Set(requests.map(req => req.user_id))];
+    const { data: userProfiles, error: userError } = await supabase
+      .from('user_profiles')
+      .select('id, full_name, username')
+      .in('id', userIds);
+
+    if (userError) {
+      console.error('Error fetching user profiles:', userError);
+      // Return requests without user info rather than failing completely
+      return requests;
+    }
+
+    // Merge the data
+    const userMap = new Map();
+    userProfiles?.forEach(profile => {
+      userMap.set(profile.id, profile);
+    });
+
+    return requests.map(request => ({
+      ...request,
+      user_profiles: userMap.get(request.user_id) || null
+    }));
   } catch (error) {
     console.error('❌ getTrainerConnectionRequests: Error occurred:', error);
     return [];
@@ -106,14 +182,39 @@ export async function getUserConnectionRequests(): Promise<ConnectionRequest[]> 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('User not authenticated');
 
-    const { data, error } = await supabase
+    // First get the connection requests
+    const { data: requests, error: requestsError } = await supabase
       .from('connection_requests')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
-    if (error) throw error;
-    return data || [];
+    if (requestsError) throw requestsError;
+    if (!requests || requests.length === 0) return [];
+
+    // Then get trainer profiles separately to avoid foreign key issues
+    const trainerIds = [...new Set(requests.map(req => req.trainer_id))];
+    const { data: trainerProfiles, error: trainerError } = await supabase
+      .from('trainer_profiles')
+      .select('user_id, full_name, username')
+      .in('user_id', trainerIds);
+
+    if (trainerError) {
+      console.error('Error fetching trainer profiles:', trainerError);
+      // Return requests without trainer info rather than failing completely
+      return requests;
+    }
+
+    // Merge the data
+    const trainerMap = new Map();
+    trainerProfiles?.forEach(profile => {
+      trainerMap.set(profile.user_id, profile);
+    });
+
+    return requests.map(request => ({
+      ...request,
+      trainer_profiles: trainerMap.get(request.trainer_id) || null
+    }));
   } catch (error) {
     console.error('Error fetching connection requests:', error);
     return [];
@@ -126,20 +227,14 @@ export async function handleConnectionRequest(
   status: 'approved' | 'rejected'
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    console.log('🔄 handleConnectionRequest: Starting...', { requestId, status });
-    
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('User not authenticated');
-    
-    console.log('🔄 handleConnectionRequest: User authenticated:', user.id);
 
     const { error } = await supabase.rpc('handle_connection_request', {
       p_request_id: requestId,
       p_status: status,
       p_trainer_id: user.id
     });
-
-    console.log('🔄 handleConnectionRequest: RPC result:', { error });
 
     if (error) throw error;
     return { success: true };
@@ -152,8 +247,6 @@ export async function handleConnectionRequest(
 // Get notifications for a user
 export async function getUserNotifications(): Promise<Notification[]> {
   try {
-    console.log('🔍 getUserNotifications: Starting...');
-    
     const { data: { user } } = await supabase.auth.getUser();
     
     if (!user) throw new Error('User not authenticated');
@@ -243,6 +336,28 @@ async function createNotification(
   data?: any
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    // Check notification preferences first
+    let shouldSendNotification = true;
+    
+    // Map notification types to preference keys
+    const preferenceMap: Record<Notification['type'], string> = {
+      'new_message': 'new_messages',
+      'connection_request': 'trainer_requests',
+      'connection_accepted': 'trainer_requests',
+      'connection_rejected': 'trainer_requests',
+      'workout_assigned': 'workout_updates',
+      'session_reminder': 'session_reminders',
+    };
+    
+    const preferenceKey = preferenceMap[type];
+    if (preferenceKey) {
+      shouldSendNotification = await isNotificationEnabled(preferenceKey as any);
+      if (!shouldSendNotification) {
+        console.log(`📱 Notification ${type} skipped - user has disabled ${preferenceKey}`);
+        return { success: true }; // Return success but don't create notification
+      }
+    }
+    
     // Check if user exists first
     const { data: userCheck, error: userCheckError } = await supabase
       .from('user_profiles')
@@ -293,8 +408,6 @@ export async function checkExistingConnectionRequest(
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) throw new Error('User not authenticated');
 
-    console.log('🔍 checkExistingConnectionRequest: Checking for user:', user.id, 'trainer:', trainerId);
-
     const { data, error } = await supabase
       .from('connection_requests')
       .select('status')
@@ -306,8 +419,6 @@ export async function checkExistingConnectionRequest(
       throw error;
     }
 
-    console.log('🔍 checkExistingConnectionRequest: Result:', { exists: !!data, status: data?.status });
-
     return { 
       exists: !!data, 
       status: data?.status 
@@ -315,5 +426,59 @@ export async function checkExistingConnectionRequest(
   } catch (error) {
     console.error('Error checking existing connection request:', error);
     return { exists: false };
+  }
+}
+
+// NEW: Automatic weekly cleanup of old notifications
+export async function cleanupOldNotifications(): Promise<{ success: boolean; deletedCount?: number; error?: string }> {
+  try {
+    // Calculate date 7 days ago
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    
+    // Delete notifications older than 7 days
+    const { data, error } = await supabase
+      .from('notifications')
+      .delete()
+      .lt('created_at', oneWeekAgo.toISOString())
+      .select('id');
+
+    if (error) {
+      console.error('❌ Error cleaning up old notifications:', error);
+      return { success: false, error: error.message };
+    }
+
+    const deletedCount = data?.length || 0;
+    console.log(`🧹 Cleaned up ${deletedCount} old notifications (older than 7 days)`);
+    
+    return { success: true, deletedCount };
+  } catch (error) {
+    console.error('❌ Error in cleanupOldNotifications:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+// NEW: Schedule automatic cleanup (call this when app starts)
+export async function scheduleAutomaticCleanup(): Promise<void> {
+  // Check if cleanup is needed (once per week)
+  const lastCleanupKey = 'last_notification_cleanup';
+  const oneWeekInMs = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+  
+  try {
+    const lastCleanup = await AsyncStorage.getItem(lastCleanupKey);
+    const now = Date.now();
+    
+    if (!lastCleanup || (now - parseInt(lastCleanup)) > oneWeekInMs) {
+      // Perform cleanup
+      const result = await cleanupOldNotifications();
+      if (result.success) {
+        console.log(`✅ Automatic cleanup completed: ${result.deletedCount} notifications removed`);
+        await AsyncStorage.setItem(lastCleanupKey, now.toString());
+      } else {
+        console.error('❌ Automatic cleanup failed:', result.error);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Error in automatic cleanup check:', error);
   }
 }

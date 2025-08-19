@@ -92,7 +92,7 @@ export default function QuickMessage({
         >
           <View style={styles.modalContent}>
             <LinearGradient
-              colors={['#6C5CE7', '#A855F7']}
+              colors={['#FF6B35', '#FF8C42']}
               style={styles.modalHeader}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
@@ -204,7 +204,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   sendButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 24,

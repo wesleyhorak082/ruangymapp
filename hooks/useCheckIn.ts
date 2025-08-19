@@ -70,7 +70,9 @@ export const useCheckIn = () => {
       const response: CheckInResponse = await gymAPI.getCheckInStatus(user.id);
 
       if (!response.success) {
-        setError(response.message);
+        // Don't display error to user interface - just log it
+        console.warn('Check-in status fetch failed:', response.message);
+        setError(null); // Don't set error state to prevent UI display
         return;
       }
 
@@ -88,7 +90,8 @@ export const useCheckIn = () => {
       
     } catch (err) {
       console.error('Error fetching check-in status:', err);
-      setError(err instanceof Error ? err.message : 'Failed to fetch check-in status');
+      // Don't display error to user interface - just log it
+      setError(null); // Don't set error state to prevent UI display
     } finally {
       setLoading(false);
     }
@@ -97,7 +100,8 @@ export const useCheckIn = () => {
   // Check in user
   const checkIn = useCallback(async () => {
     if (!user) {
-      setError('User not authenticated');
+      console.warn('User not authenticated during check-in');
+      setError(null); // Don't set error state to prevent UI display
       return false;
     }
 
@@ -109,7 +113,8 @@ export const useCheckIn = () => {
       const response: CheckInResponse = await gymAPI.checkIn(user.id);
 
       if (!response.success) {
-        setError(response.message);
+        console.warn('Check-in API failed:', response.message);
+        setError(null); // Don't set error state to prevent UI display
         return false;
       }
 
@@ -125,7 +130,7 @@ export const useCheckIn = () => {
       return true;
     } catch (err) {
       console.error('Error checking in:', err);
-      setError(err instanceof Error ? err.message : 'Failed to check in');
+      setError(null); // Don't set error state to prevent UI display
       return false;
     } finally {
       setLoading(false);
@@ -135,7 +140,8 @@ export const useCheckIn = () => {
   // Check out user
   const checkOut = useCallback(async () => {
     if (!user) {
-      setError('User not authenticated');
+      console.warn('User not authenticated during checkout');
+      setError(null); // Don't set error state to prevent UI display
       return false;
     }
 
@@ -143,7 +149,7 @@ export const useCheckIn = () => {
     const checkoutTimeout = setTimeout(() => {
       console.warn('⚠️ Checkout timeout reached, resetting loading state');
       setLoading(false);
-      setError('Checkout timed out. Please try again.');
+      setError(null); // Don't set error state to prevent UI display
     }, 30000); // 30 second timeout
 
     try {
@@ -152,7 +158,8 @@ export const useCheckIn = () => {
 
       // Check if user is checked in
       if (!checkInStatus.is_checked_in) {
-        setError('User is not checked in');
+        console.warn('User is not checked in during checkout');
+        setError(null); // Don't set error state to prevent UI display
         clearTimeout(checkoutTimeout);
         setLoading(false);
         return false;
@@ -163,7 +170,7 @@ export const useCheckIn = () => {
 
       if (!response.success) {
         console.error('Checkout API failed:', response.message);
-        setError(response.message);
+        setError(null); // Don't set error state to prevent UI display
         clearTimeout(checkoutTimeout);
         setLoading(false);
         return false;
@@ -172,7 +179,7 @@ export const useCheckIn = () => {
       // Validate response data
       if (!response.data) {
         console.error('Checkout API returned no data');
-        setError('Checkout failed: No data received');
+        setError(null); // Don't set error state to prevent UI display
         clearTimeout(checkoutTimeout);
         setLoading(false);
         return false;
@@ -203,23 +210,19 @@ export const useCheckIn = () => {
       // Use a longer delay to prevent rapid state changes that cause flickering
       setTimeout(async () => {
         try {
-          // Use a longer debounce to prevent rapid updates
-          const debouncedRefresh = debounce(async () => {
-            await fetchCheckInStatus();
-            await fetchWorkoutStats();
-          }, 500); // Increased from 200ms to 500ms
-          
-          debouncedRefresh();
+          // Use a longer delay to prevent rapid updates
+          await fetchCheckInStatus();
+          await fetchWorkoutStats();
         } catch (error) {
           console.error('❌ Error refreshing status after checkout:', error);
         }
-      }, 100); // Increased from 50ms to 100ms
+      }, 1000); // Increased from 500ms to 1000ms to prevent flickering
       
       clearTimeout(checkoutTimeout);
       return true;
     } catch (err) {
       console.error('❌ Unexpected error during checkout:', err);
-      setError(err instanceof Error ? err.message : 'Failed to check out');
+      setError(null); // Don't set error state to prevent UI display
       clearTimeout(checkoutTimeout);
       return false;
     } finally {
@@ -234,7 +237,7 @@ export const useCheckIn = () => {
       const fallbackReset = setTimeout(() => {
         console.warn('⚠️ Loading state stuck, forcing reset');
         setLoading(false);
-        setError('Operation timed out. Please try again.');
+        setError(null); // Don't set error state to prevent UI display
       }, 45000); // 45 second fallback
 
       return () => clearTimeout(fallbackReset);
@@ -284,7 +287,8 @@ export const useCheckIn = () => {
   // Freeze streak
   const freezeStreak = useCallback(async () => {
     if (!user) {
-      setError('User not authenticated');
+      console.warn('User not authenticated during freeze streak');
+      setError(null); // Don't set error state to prevent UI display
       return { success: false, message: 'User not authenticated', canFreeze: false };
     }
 
@@ -303,7 +307,7 @@ export const useCheckIn = () => {
     } catch (err) {
       console.error('Error freezing streak:', err);
       const errorMessage = err instanceof Error ? err.message : 'Failed to freeze streak';
-      setError(errorMessage);
+      setError(null); // Don't set error state to prevent UI display
       return { success: false, message: errorMessage, canFreeze: false };
     } finally {
       setLoading(false);

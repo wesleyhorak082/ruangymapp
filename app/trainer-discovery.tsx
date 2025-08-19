@@ -18,15 +18,25 @@ import {
   Clock, 
   MapPin, 
   MessageCircle, 
-  Calendar,
   X,
-  CheckCircle,
-  AlertCircle
+  CheckCircle
 } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
+import { useProfile } from '@/contexts/ProfileContext';
 import { useUserRoles } from '@/hooks/useUserRoles';
 import { supabase } from '@/lib/supabase';
+import { 
+  getTrainerAvailableSlots, 
+  createTrainerBooking, 
+  AvailableTimeSlot,
+  BookingRequest 
+} from '@/lib/trainerBookings';
+import { createBookingNotification } from '@/lib/notifications';
+import pushNotifications from '@/lib/pushNotifications';
+import ProfilePicture from '@/components/ProfilePicture';
+import StarRating from '@/components/StarRating';
+import { getTrainerRatingStats } from '@/lib/trainerRatings';
 
 interface Trainer {
   id: string;
@@ -51,6 +61,10 @@ interface Trainer {
   };
   location: string;
   certifications: string[];
+  ratingStats?: {
+    average_rating: number;
+    total_ratings: number;
+  };
 }
 
 interface ConnectionRequest {
@@ -66,6 +80,7 @@ interface ConnectionRequest {
 export default function TrainerDiscovery() {
   const { user } = useAuth();
   const { isTrainer } = useUserRoles();
+  const { refreshProfiles } = useProfile();
   const [trainers, setTrainers] = useState<Trainer[]>([]);
   const [filteredTrainers, setFilteredTrainers] = useState<Trainer[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -84,6 +99,28 @@ export default function TrainerDiscovery() {
 
   useEffect(() => {
     fetchTrainers();
+    
+    // Set up real-time subscription to trainer profile changes
+    const trainerProfileSubscription = supabase
+      .channel('trainer_discovery_updates')
+      .on('postgres_changes', 
+        { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: 'trainer_profiles'
+        },
+        (payload) => {
+          console.log('Trainer profile updated, refreshing trainer list:', payload.new);
+          // Refresh the trainer list when any trainer profile is updated
+          fetchTrainers();
+        }
+      )
+      .subscribe();
+
+    // Cleanup subscription
+    return () => {
+      trainerProfileSubscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -111,7 +148,8 @@ export default function TrainerDiscovery() {
             bio,
             phone,
             age,
-            sex
+            sex,
+            avatar_url
           )
         `)
         .eq('is_available', true);
@@ -129,7 +167,7 @@ export default function TrainerDiscovery() {
           id: profile.id,
           full_name: profile.user_profiles?.full_name || profile.user_profiles?.username || 'Trainer',
           username: profile.user_profiles?.username || 'trainer',
-          profile_image: undefined,
+          profile_image: profile.user_profiles?.avatar_url || undefined,
           bio: profile.user_profiles?.bio || profile.bio || 'Professional fitness trainer',
           specialties: [profile.specialty || 'Personal Training'],
           experience_years: profile.experience_years || 1,
@@ -152,6 +190,20 @@ export default function TrainerDiscovery() {
         
         return trainer;
       });
+
+      // Fetch rating data for each trainer
+      for (const trainer of transformedTrainers) {
+        try {
+          const ratingStats = await getTrainerRatingStats(trainer.id);
+          if (ratingStats && ratingStats.average_rating > 0) {
+            trainer.rating = ratingStats.average_rating;
+            trainer.review_count = ratingStats.total_ratings;
+            trainer.ratingStats = ratingStats;
+          }
+        } catch (error) {
+          console.error(`Error fetching rating data for trainer ${trainer.id}:`, error);
+        }
+      }
       
       setTrainers(transformedTrainers);
       
@@ -272,7 +324,7 @@ export default function TrainerDiscovery() {
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <LinearGradient
-        colors={['#6C5CE7', '#A855F7']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -282,15 +334,7 @@ export default function TrainerDiscovery() {
             <Text style={styles.title}>Find Your Perfect Trainer</Text>
             <Text style={styles.subtitle}>Connect with certified professionals to achieve your fitness goals</Text>
           </View>
-          <TouchableOpacity 
-            style={styles.refreshButton} 
-            onPress={fetchTrainers}
-            disabled={loading}
-          >
-            <Text style={styles.refreshButtonText}>
-              {loading ? '...' : '🔄'}
-            </Text>
-          </TouchableOpacity>
+
         </View>
       </LinearGradient>
 
@@ -344,9 +388,11 @@ export default function TrainerDiscovery() {
                     <View style={styles.trainerHeader}>
                       <View style={styles.trainerInfo}>
                         <View style={styles.trainerImageContainer}>
-                          <Text style={styles.trainerInitials}>
-                            {trainer.full_name.split(' ').map(n => n[0]).join('')}
-                          </Text>
+                          <ProfilePicture
+                            avatarUrl={trainer.profile_image}
+                            fullName={trainer.full_name}
+                            size={50}
+                          />
                         </View>
                         <View style={styles.trainerDetails}>
                           <Text style={styles.trainerName}>{trainer.full_name}</Text>
@@ -377,9 +423,14 @@ export default function TrainerDiscovery() {
 
                     <View style={styles.trainerStats}>
                       <View style={styles.statItem}>
-                        <Star size={16} color="#F59E0B" />
-                        <Text style={styles.statText}>{trainer.rating}</Text>
-                        <Text style={styles.statLabel}>({trainer.review_count})</Text>
+                        <StarRating
+                          rating={trainer.rating}
+                          size={16}
+                          readonly={true}
+                          showRating={true}
+                          showCount={true}
+                          totalRatings={trainer.review_count}
+                        />
                       </View>
                       <View style={styles.statItem}>
                         <Clock size={16} color="#6B7280" />
@@ -387,7 +438,7 @@ export default function TrainerDiscovery() {
                         <Text style={styles.statLabel}>Experience</Text>
                       </View>
                       <View style={styles.statItem}>
-                        <Text style={styles.hourlyRate}>${trainer.hourly_rate}/hr</Text>
+                        <Text style={styles.hourlyRate}>R{trainer.hourly_rate}/hr</Text>
                       </View>
                     </View>
 
@@ -467,7 +518,7 @@ export default function TrainerDiscovery() {
                     <Text style={styles.modalSectionTitle}>Stats</Text>
                     <View style={styles.modalStats}>
                       <View style={styles.modalStatItem}>
-                        <Text style={styles.modalStatNumber}>{selectedTrainer.rating}</Text>
+                        <Text style={styles.modalStatNumber}>{selectedTrainer.rating.toFixed(1)}</Text>
                         <Text style={styles.modalStatLabel}>Rating</Text>
                       </View>
                       <View style={styles.modalStatItem}>
@@ -479,7 +530,7 @@ export default function TrainerDiscovery() {
                         <Text style={styles.modalStatLabel}>Years</Text>
                       </View>
                       <View style={styles.modalStatItem}>
-                        <Text style={styles.modalStatNumber}>${selectedTrainer.hourly_rate}</Text>
+                        <Text style={styles.modalStatNumber}>R{selectedTrainer.hourly_rate}</Text>
                         <Text style={styles.modalStatLabel}>Per Hour</Text>
                       </View>
                     </View>
@@ -502,7 +553,7 @@ export default function TrainerDiscovery() {
                   {isTrainer() && (
                     <View style={styles.trainerInfoBox}>
                       <Text style={styles.trainerInfoText}>
-                        You're viewing this as a trainer. Users can request connections to you from their trainer discovery screen.
+                        You&apos;re viewing this as a trainer. Users can request connections to you from their trainer discovery screen.
                       </Text>
                     </View>
                   )}
@@ -601,6 +652,8 @@ const styles = StyleSheet.create({
   header: {
     padding: 20,
     paddingTop: 60,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   headerContent: {
     flexDirection: 'row',
@@ -621,15 +674,7 @@ const styles = StyleSheet.create({
     color: '#E5E7EB',
     lineHeight: 22,
   },
-  refreshButton: {
-    padding: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 20,
-  },
-  refreshButtonText: {
-    fontSize: 20,
-    color: '#FFFFFF',
-  },
+
   content: {
     padding: 20,
   },
@@ -695,7 +740,7 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -899,7 +944,7 @@ const styles = StyleSheet.create({
   modalStatNumber: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#6C5CE7',
+    color: '#FF6B35',
     marginBottom: 4,
   },
   modalStatLabel: {
@@ -914,7 +959,7 @@ const styles = StyleSheet.create({
     borderTopColor: '#E5E7EB',
   },
   connectButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -952,8 +997,8 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   goalOptionSelected: {
-    backgroundColor: '#6C5CE7',
-    borderColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
+    borderColor: '#FF6B35',
   },
   goalOptionText: {
     fontSize: 14,

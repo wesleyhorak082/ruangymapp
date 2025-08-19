@@ -20,7 +20,6 @@ import {
   Trash2, 
   DollarSign,
   Package,
-  Image as ImageIcon,
   X
 } from 'lucide-react-native';
 import { router } from 'expo-router';

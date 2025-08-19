@@ -1,21 +1,20 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Stack, useRouter } from 'expo-router';
-import { Menu } from 'lucide-react-native';
-import { TouchableOpacity, Animated } from 'react-native';
 import Drawer from '@/components/Drawer';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUserRoles } from '@/hooks/useUserRoles';
 
 export default function TabLayout() {
   const [drawerVisible, setDrawerVisible] = useState(false);
-  const slideAnim = useRef(new Animated.Value(0)).current;
   const { user, loading } = useAuth();
   const { isAdmin } = useUserRoles();
   const router = useRouter();
 
   // Redirect to auth if user is not authenticated
   useEffect(() => {
+    console.log('Auth guard check:', { loading, user: user?.id, isAuthenticated: !!user });
     if (!loading && !user) {
+      console.log('User not authenticated, redirecting to welcome screen...');
       router.replace('/(auth)/welcome');
     }
   }, [user, loading, router]);
@@ -34,21 +33,10 @@ export default function TabLayout() {
 
   const openDrawer = () => {
     setDrawerVisible(true);
-    Animated.timing(slideAnim, {
-      toValue: 1,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
   };
 
   const closeDrawer = () => {
-    Animated.timing(slideAnim, {
-      toValue: 0,
-      duration: 300,
-      useNativeDriver: true,
-    }).start(() => {
-      setDrawerVisible(false);
-    });
+    setDrawerVisible(false);
   };
 
   return (
@@ -75,89 +63,49 @@ export default function TabLayout() {
         <Stack.Screen
           name="workouts"
           options={{
-            title: 'Workouts',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
         <Stack.Screen
           name="messages"
           options={{
-            title: 'Messages',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
         <Stack.Screen
           name="notifications"
           options={{
-            title: 'Notifications',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
         <Stack.Screen
           name="schedule"
           options={{
-            title: 'Schedule',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
         <Stack.Screen
           name="progress"
           options={{
-            title: 'Progress',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
         <Stack.Screen
           name="achievements"
           options={{
-            title: 'Achievements',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
         <Stack.Screen
           name="shop"
           options={{
-            title: 'Shop',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
         <Stack.Screen
           name="settings"
           options={{
-            title: 'Settings',
-            headerLeft: () => (
-              <TouchableOpacity onPress={openDrawer} style={{ padding: 8, marginLeft: 8 }}>
-                <Menu size={24} color="#6C5CE7" />
-              </TouchableOpacity>
-            ),
+            headerShown: false,
           }}
         />
       </Stack>
@@ -166,7 +114,6 @@ export default function TabLayout() {
       <Drawer
         visible={drawerVisible}
         onClose={closeDrawer}
-        slideAnim={slideAnim}
       />
     </>
   );

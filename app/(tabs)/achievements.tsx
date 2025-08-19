@@ -1,14 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, RefreshControl } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Trophy, Target, Users, Star, Zap, Award, TrendingUp, Calendar, Crown } from 'lucide-react-native';
+import { Trophy, Target, Users } from 'lucide-react-native';
 import { useAuth } from '@/contexts/AuthContext';
-import { useUserRoles } from '@/hooks/useUserRoles';
+
 import { GamificationService, Achievement, Challenge, LeaderboardEntry, UserStats } from '@/lib/gamification';
 
 export default function AchievementsScreen() {
   const { user } = useAuth();
-  const { isTrainer } = useUserRoles();
   const [activeTab, setActiveTab] = useState<'achievements' | 'challenges' | 'leaderboard'>('achievements');
   const [achievements, setAchievements] = useState<Achievement[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
@@ -24,24 +23,21 @@ export default function AchievementsScreen() {
     totalGoalsAchieved: 0,
     achievementsUnlocked: 0,
     challengesCompleted: 0,
+    streakFrozen: false,
+    streakFrozenAt: null,
+    streakFreezeUsedThisWeek: false,
+    streakFreezeWeekStart: null,
+    lastCheckinDate: null,
   });
   const [refreshing, setRefreshing] = useState(false);
+  const [achievementsError, setAchievementsError] = useState<string | null>(null);
 
-  // Early return for trainers - prevent any rendering or data fetching
-  if (isTrainer()) {
-    return null;
-  }
-
-  // Only fetch data for regular users
-  useEffect(() => {
-    if (user) {
-      fetchGamificationData();
-    }
-  }, [user]);
-
-  const fetchGamificationData = async () => {
+  const fetchGamificationData = useCallback(async () => {
     try {
       if (!user) return;
+      
+      // Clear any previous errors
+      setAchievementsError(null);
 
       // Fetch user stats
       const stats = await GamificationService.getUserStats(user.id);
@@ -51,8 +47,13 @@ export default function AchievementsScreen() {
 
       // Fetch achievements with error handling
       try {
+        console.log('🔍 Fetching available achievements...');
         const availableAchievements = await GamificationService.getAvailableAchievements();
+        console.log(`✅ Found ${availableAchievements.length} available achievements`);
+        
+        console.log('🔍 Fetching user achievements...');
         const userAchievements = await GamificationService.getUserAchievements(user.id);
+        console.log(`✅ Found ${userAchievements.length} user achievements`);
         
         // Merge available achievements with user unlock status
         const mergedAchievements = availableAchievements.map(achievement => {
@@ -64,16 +65,20 @@ export default function AchievementsScreen() {
           };
         });
         
+        console.log(`✅ Merged ${mergedAchievements.length} achievements`);
         setAchievements(mergedAchievements);
-      } catch (achievementError) {
+        setAchievementsError(null); // Clear any previous errors
+      } catch (error) {
+        console.error('❌ Error fetching achievements:', error);
         setAchievements([]);
+        setAchievementsError(error instanceof Error ? error.message : 'Failed to load achievements');
       }
 
       // Fetch challenges with error handling
       try {
         const userChallenges = await GamificationService.getUserChallenges(user.id);
         setChallenges(userChallenges);
-      } catch (challengeError) {
+      } catch {
         setChallenges([]);
       }
 
@@ -87,13 +92,20 @@ export default function AchievementsScreen() {
           const userRank = leaderboardData.findIndex(entry => entry.id === user.id) + 1;
           setUserStats(prev => ({ ...prev, rank: userRank > 0 ? userRank : leaderboardData.length + 1 }));
         }
-      } catch (leaderboardError) {
+      } catch {
         setLeaderboard([]);
       }
     } catch (error) {
       console.error('Error fetching gamification data:', error);
     }
-  };
+  }, [user]);
+
+  // Only fetch data for regular users
+  useEffect(() => {
+    if (user) {
+      fetchGamificationData();
+    }
+  }, [fetchGamificationData, user]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -101,48 +113,11 @@ export default function AchievementsScreen() {
     setRefreshing(false);
   };
 
-  const getCategoryColor = (category: Achievement['category']) => {
-    switch (category) {
-      case 'workout': return '#4ECDC4';
-      case 'streak': return '#FF6B35';
-      case 'goal': return '#6C5CE7';
-      case 'special': return '#F7931E';
-      default: return '#95A5A6';
-    }
-  };
 
-  const getCategoryIcon = (category: Achievement['category']) => {
-    switch (category) {
-      case 'workout': return <Target size={16} color="#4ECDC4" />;
-      case 'streak': return <Zap size={16} color="#FF6B35" />;
-      case 'goal': return <Trophy size={16} color="#6C5CE7" />;
-      case 'special': return <Star size={16} color="#F7931E" />;
-      default: return <Award size={16} color="#95A5A6" />;
-    }
-  };
 
-  // Show trainer message if user is a trainer
-  if (isTrainer()) {
-    return (
-      <View style={styles.trainerContainer}>
-        <LinearGradient
-          colors={['#6C5CE7', '#A855F7']}
-          style={styles.trainerHeader}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-        >
-          <Trophy size={48} color="#FFFFFF" />
-          <Text style={styles.trainerTitle}>Achievements</Text>
-          <Text style={styles.trainerSubtitle}>This feature is for gym members only</Text>
-        </LinearGradient>
-        <View style={styles.trainerContent}>
-          <Text style={styles.trainerMessage}>
-            As a trainer, you can track your clients' achievements and progress in the Client Dashboard.
-          </Text>
-        </View>
-      </View>
-    );
-  }
+
+
+
 
   return (
     <ScrollView 
@@ -153,7 +128,7 @@ export default function AchievementsScreen() {
       }
     >
       <LinearGradient
-        colors={['#1E293B', '#334155']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -226,12 +201,30 @@ export default function AchievementsScreen() {
         {activeTab === 'achievements' && (
           <View style={styles.tabContent}>
             <Text style={styles.sectionTitle}>All Achievements</Text>
-            {achievements.length > 0 ? (
+            
+            {achievementsError ? (
+              <View style={styles.errorState}>
+                <Text style={styles.errorIcon}>⚠️</Text>
+                <Text style={styles.errorTitle}>Error Loading Achievements</Text>
+                <Text style={styles.errorMessage}>{achievementsError}</Text>
+                <TouchableOpacity 
+                  style={styles.retryButton}
+                  onPress={() => {
+                    setAchievementsError(null);
+                    fetchGamificationData();
+                  }}
+                >
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : achievements.length > 0 ? (
               <View style={styles.achievementsGrid}>
                 {achievements.map((achievement) => (
                   <View key={achievement.id} style={[styles.achievementCard, achievement.unlocked && styles.achievementCardUnlocked]}>
                     <View style={styles.achievementIcon}>
-                      <Text style={styles.achievementIconText}>{achievement.icon}</Text>
+                      <Text style={[styles.achievementIconText, achievement.unlocked && styles.achievementIconTextUnlocked]}>
+                        {achievement.icon}
+                      </Text>
                     </View>
                     
                     <Text style={styles.achievementName}>{achievement.name}</Text>
@@ -247,7 +240,7 @@ export default function AchievementsScreen() {
                     <Text style={styles.achievementPoints}>+{achievement.points} pts</Text>
                     
                     {achievement.unlocked && (
-                      <Text style={styles.unlockDate}>Unlocked {achievement.unlockDate}</Text>
+                      <Text style={styles.unlockDate}>Unlocked {achievement.unlockedAt}</Text>
                     )}
                     
                                          {!achievement.unlocked && (
@@ -272,8 +265,8 @@ export default function AchievementsScreen() {
             ) : (
               <View style={styles.emptyState}>
                 <Trophy size={48} color="#D1D5DB" />
-                <Text style={styles.emptyStateText}>No achievements available</Text>
-                <Text style={styles.emptyStateSubtext}>Start working out to unlock achievements!</Text>
+                <Text style={styles.emptyStateTitle}>No achievements available</Text>
+                <Text style={styles.emptyStateSubtitle}>Start working out to unlock achievements!</Text>
               </View>
             )}
           </View>
@@ -314,8 +307,8 @@ export default function AchievementsScreen() {
             ) : (
               <View style={styles.emptyState}>
                 <Target size={48} color="#D1D5DB" />
-                <Text style={styles.emptyStateText}>No active challenges</Text>
-                <Text style={styles.emptyStateSubtext}>Check back later for new challenges!</Text>
+                <Text style={styles.emptyStateTitle}>No active challenges</Text>
+                <Text style={styles.emptyStateSubtitle}>Check back later for new challenges!</Text>
               </View>
             )}
           </View>
@@ -355,8 +348,8 @@ export default function AchievementsScreen() {
             ) : (
               <View style={styles.emptyState}>
                 <Users size={48} color="#D1D5DB" />
-                <Text style={styles.emptyStateText}>No leaderboard data</Text>
-                <Text style={styles.emptyStateSubtext}>Be the first to start earning points!</Text>
+                <Text style={styles.emptyStateTitle}>No leaderboard data</Text>
+                <Text style={styles.emptyStateSubtitle}>Be the first to start earning points!</Text>
               </View>
             )}
           </View>
@@ -451,7 +444,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   activeTab: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
   },
   tabText: {
     fontSize: 14,
@@ -463,15 +456,15 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
+    width: '100%',
   },
   sectionTitle: {
     fontSize: 22,
     fontWeight: 'bold',
     color: '#1E293B',
     marginBottom: 20,
+    textAlign: 'left',
+    alignSelf: 'flex-start',
   },
   sectionSubtitle: {
     fontSize: 16,
@@ -502,7 +495,7 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#6C5CE7',
+    color: '#FF6B35',
     marginBottom: 8,
   },
   statLabel: {
@@ -515,81 +508,107 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 16,
+    gap: 12,
+    paddingHorizontal: 4,
   },
   achievementCard: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
     borderRadius: 20,
-    padding: 24,
+    padding: 20,
     width: '48%',
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 12,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-    marginBottom: 16,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    marginBottom: 12,
     position: 'relative',
     overflow: 'hidden',
+    minHeight: 200,
   },
   achievementCardUnlocked: {
     borderColor: '#FFD700',
     shadowColor: '#FFD700',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.2,
-    shadowRadius: 20,
-    elevation: 16,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 12,
+    backgroundColor: 'rgba(255, 215, 0, 0.02)',
+    borderWidth: 2,
+  },
+  achievementCardPressed: {
+    transform: [{ scale: 0.98 }],
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    elevation: 6,
   },
   achievementIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: 'rgba(255, 107, 53, 0.1)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 107, 53, 0.2)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   achievementIconUnlocked: {
-    backgroundColor: 'rgba(255, 215, 0, 0.2)',
+    backgroundColor: 'rgba(255, 215, 0, 0.15)',
+    borderColor: 'rgba(255, 215, 0, 0.4)',
+    shadowColor: '#FFD700',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   achievementName: {
-    fontSize: 16,
-    fontWeight: 'bold',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#1E293B',
     textAlign: 'center',
-    marginBottom: 8,
-    lineHeight: 20,
+    marginBottom: 6,
+    lineHeight: 18,
+    paddingHorizontal: 4,
   },
   achievementDescription: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#64748B',
     textAlign: 'center',
-    lineHeight: 18,
-    marginBottom: 12,
+    lineHeight: 16,
+    marginBottom: 10,
+    paddingHorizontal: 2,
   },
   achievementProgress: {
     width: '100%',
-    height: 8,
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
-    borderRadius: 4,
+    height: 6,
+    backgroundColor: 'rgba(255, 107, 53, 0.1)',
+    borderRadius: 3,
     overflow: 'hidden',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   achievementProgressFill: {
     height: '100%',
-    backgroundColor: '#6C5CE7',
-    borderRadius: 4,
+    backgroundColor: '#FF6B35',
+    borderRadius: 3,
   },
   achievementProgressFillUnlocked: {
     backgroundColor: '#FFD700',
   },
   achievementProgressText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#64748B',
     textAlign: 'center',
-    fontWeight: '500',
+    fontWeight: '600',
+    marginBottom: 4,
   },
   achievementProgressTextUnlocked: {
     color: '#FFD700',
@@ -607,33 +626,66 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: 'rgba(107, 114, 128, 0.3)',
+    borderColor: 'rgba(107, 114, 128, 0.4)',
   },
-  lockedIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  lockedContent: {
     alignItems: 'center',
     justifyContent: 'center',
+    padding: 12,
   },
+  lockedIconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+    borderWidth: 2,
+    borderColor: '#6B7280',
+  },
+  lockedLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 12,
+    letterSpacing: 0.5,
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  lockedProgress: {
+    alignItems: 'center',
+    width: '100%',
+  },
+  lockedProgressBar: {
+    width: '100%',
+    height: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 2,
+    overflow: 'hidden',
+    marginBottom: 6,
+  },
+  lockedProgressFill: {
+    height: '100%',
+    backgroundColor: '#FF6B35',
+    borderRadius: 2,
+  },
+  lockedProgressText: {
+    fontSize: 9,
+    color: '#FFFFFF',
+    fontWeight: '600',
+    opacity: 0.9,
+  },
+  // Empty state styles
   emptyState: {
     alignItems: 'center',
     paddingVertical: 60,
-  },
-  emptyStateIcon: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 24,
   },
   emptyStateTitle: {
     fontSize: 20,
@@ -649,277 +701,31 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 32,
   },
-  emptyStateButton: {
-    backgroundColor: '#6C5CE7',
-    borderRadius: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  emptyStateButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  filterContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 6,
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  filterTab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
-    borderRadius: 12,
-  },
-  filterTabActive: {
-    backgroundColor: '#6C5CE7',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  filterTabText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  filterTabTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  recentAchievements: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 24,
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  recentAchievementItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(30, 41, 59, 0.1)',
-  },
-  recentAchievementItemLast: {
-    borderBottomWidth: 0,
-  },
-  recentAchievementIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 215, 0, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
-  },
-  recentAchievementInfo: {
-    flex: 1,
-  },
-  recentAchievementName: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#1E293B',
-    marginBottom: 4,
-  },
-  recentAchievementDate: {
-    fontSize: 14,
-    color: '#64748B',
-  },
-  levelProgressContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 24,
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    elevation: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  levelInfo: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  currentLevel: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1E293B',
-  },
-  levelProgress: {
-    fontSize: 16,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  levelProgressBar: {
-    height: 12,
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
-    borderRadius: 6,
-    overflow: 'hidden',
-    marginBottom: 16,
-  },
-  levelProgressFill: {
-    height: '100%',
-    backgroundColor: '#6C5CE7',
-    borderRadius: 6,
-  },
-  levelRewards: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  levelReward: {
-    alignItems: 'center',
-  },
-  rewardIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  rewardText: {
-    fontSize: 12,
-    color: '#64748B',
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  rewardUnlocked: {
-    backgroundColor: 'rgba(255, 215, 0, 0.2)',
-  },
-  rewardTextUnlocked: {
-    color: '#FFD700',
-    fontWeight: '700',
-  },
-  // Missing styles for existing components
-  trainerContainer: {
-    flex: 1,
-    backgroundColor: '#F8F9FA',
-  },
-  trainerHeader: {
-    padding: 20,
-    paddingTop: 60,
-    alignItems: 'center',
-  },
-  trainerTitle: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#FFFFFF',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  trainerSubtitle: {
-    fontSize: 16,
-    color: '#E5E7EB',
-  },
-  trainerContent: {
-    flex: 1,
-    padding: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  trainerMessage: {
-    fontSize: 16,
-    color: '#64748B',
-    textAlign: 'center',
-    lineHeight: 22,
-    maxWidth: 300,
-  },
+  // Achievement icon and text styles
   achievementIconText: {
-    fontSize: 32,
-    color: '#6C5CE7',
+    fontSize: 28,
+    color: '#FF6B35',
+  },
+  achievementIconTextUnlocked: {
+    fontSize: 28,
+    color: '#FFD700',
+    textShadowColor: 'rgba(255, 215, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
   achievementPoints: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#6C5CE7',
-    marginTop: 8,
-  },
-  unlockDate: {
-    fontSize: 12,
-    color: '#00B894',
-    fontWeight: '600',
-    marginTop: 8,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FF6B35',
+    marginTop: 4,
+    backgroundColor: 'rgba(255, 107, 53, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   lockedIconText: {
     fontSize: 20,
     color: '#FFFFFF',
-  },
-  // Enhanced locked state styles
-  lockedContent: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-  },
-  lockedIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-    borderWidth: 2,
-    borderColor: '#6B7280',
-  },
-  lockedLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 16,
-    letterSpacing: 1,
-    textShadowColor: 'rgba(0, 0, 0, 0.5)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
-  },
-  lockedProgress: {
-    alignItems: 'center',
-    width: '100%',
-  },
-  lockedProgressBar: {
-    width: '100%',
-    height: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  lockedProgressFill: {
-    height: '100%',
-    backgroundColor: '#6C5CE7',
-    borderRadius: 3,
-  },
-  lockedProgressText: {
-    fontSize: 10,
-    color: '#FFFFFF',
-    fontWeight: '600',
-    opacity: 0.8,
   },
   // Challenge styles
   challengeCard: {
@@ -947,7 +753,7 @@ const styles = StyleSheet.create({
   },
   challengeType: {
     fontSize: 14,
-    color: '#6C5CE7',
+    color: '#FF6B35',
     fontWeight: '600',
   },
   challengeReward: {
@@ -973,7 +779,7 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     borderRadius: 4,
   },
   progressText: {
@@ -1035,7 +841,7 @@ const styles = StyleSheet.create({
   },
   username: {
     fontSize: 14,
-    color: '#6C5CE7',
+    color: '#FF6B35',
     fontWeight: '600',
     marginBottom: 2,
   },
@@ -1057,23 +863,46 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#636E72',
   },
-  // Empty state styles
-  emptyState: {
+
+  // Error state styles
+  errorState: {
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 40,
+    paddingVertical: 60,
+    paddingHorizontal: 20,
   },
-  emptyStateText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#6B7280',
-    marginTop: 16,
+  errorIcon: {
+    fontSize: 48,
+    marginBottom: 16,
+  },
+  errorTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#EF4444',
     marginBottom: 8,
-  },
-  emptyStateSubtext: {
-    fontSize: 14,
-    color: '#9CA3AF',
     textAlign: 'center',
-    lineHeight: 20,
   },
+  errorMessage: {
+    fontSize: 16,
+    color: '#6B7280',
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  retryButton: {
+    backgroundColor: '#FF6B35',
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+
 });

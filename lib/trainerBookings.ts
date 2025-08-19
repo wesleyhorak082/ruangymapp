@@ -4,15 +4,15 @@ export interface TrainerBooking {
   id: string;
   user_id: string;
   trainer_id: string;
-  session_date: string;
-  start_time: string;
-  end_time: string;
+  session_date: string; // YYYY-MM-DD format
+  start_time: string; // HH:MM format
+  end_time: string; // HH:MM format
   duration_minutes: number;
   session_type: string;
   status: 'pending' | 'accepted' | 'declined' | 'cancelled' | 'completed';
   notes?: string;
   created_at: string;
-  updated_at: string;
+  updated_at?: string;
   accepted_at?: string;
   declined_at?: string;
   cancelled_at?: string;
@@ -20,16 +20,18 @@ export interface TrainerBooking {
 }
 
 export interface AvailableTimeSlot {
-  start_time: string;
-  end_time: string;
+  start_time: string; // HH:MM format
+  end_time: string;   // HH:MM format
   duration_minutes: number;
 }
 
 export interface BookingRequest {
   trainer_id: string;
-  session_date: string;
-  start_time: string;
+  session_date: string; // YYYY-MM-DD format
+  start_time: string; // HH:MM format
+  end_time: string; // HH:MM format
   duration_minutes: number;
+  session_type?: string;
   notes?: string;
 }
 
@@ -40,19 +42,94 @@ export const getTrainerAvailableSlots = async (
   durationMinutes: number = 60
 ): Promise<AvailableTimeSlot[]> => {
   try {
-    const { data, error } = await supabase
-      .rpc('get_trainer_available_slots', {
-        p_trainer_id: trainerId,
-        p_session_date: sessionDate,
-        p_duration_minutes: durationMinutes
-      });
+    // First, get the trainer's availability from their profile
+    const { data: trainerProfile, error: profileError } = await supabase
+      .from('trainer_profiles')
+      .select('availability, is_available')
+      .eq('id', trainerId)
+      .single();
 
-    if (error) {
-      console.error('Error getting trainer available slots:', error);
-      throw error;
+    if (profileError) {
+      console.error('Error getting trainer profile:', profileError);
+      return []; // Return empty if we can't get trainer info
     }
 
-    return data || [];
+    if (!trainerProfile || !trainerProfile.is_available) {
+      console.log('Trainer is not available');
+      return []; // Trainer is not available
+    }
+
+    // Parse trainer's availability (stored as JSONB array of time slots)
+    const trainerAvailability = trainerProfile.availability || [];
+    
+    if (trainerAvailability.length === 0) {
+      console.log('Trainer has no availability set');
+      return []; // Trainer hasn't set their availability
+    }
+
+    // Convert trainer availability to time slots
+    const availableSlots: AvailableTimeSlot[] = [];
+    
+    trainerAvailability.forEach((slot: any) => {
+      if (slot.start_time && slot.end_time) {
+        // Create 60-minute slots within the trainer's available time
+        const startHour = parseInt(slot.start_time.split(':')[0]);
+        const endHour = parseInt(slot.end_time.split(':')[0]);
+        
+        for (let hour = startHour; hour < endHour; hour++) {
+          const startTime = `${hour.toString().padStart(2, '0')}:00`;
+          const endHourTime = hour + 1;
+          const endTime = `${endHourTime.toString().padStart(2, '0')}:00`;
+          
+          availableSlots.push({
+            start_time: startTime,
+            end_time: endTime,
+            duration_minutes: 60
+          });
+        }
+      }
+    });
+
+    if (availableSlots.length === 0) {
+      console.log('No available time slots generated from trainer availability');
+      return [];
+    }
+
+    // Check for existing bookings on this date to filter out conflicting times
+    try {
+      const { data: existingBookings, error } = await supabase
+        .from('trainer_bookings')
+        .select('start_time, end_time')
+        .eq('trainer_id', trainerId)
+        .eq('session_date', sessionDate)
+        .not('status', 'in', '(cancelled,declined)');
+      
+      if (error) {
+        console.error('Error checking existing bookings:', error);
+        // Return available slots if we can't check conflicts
+        return availableSlots;
+      }
+      
+      if (existingBookings && existingBookings.length > 0) {
+        // Filter out times that conflict with existing bookings
+        const conflictingTimes = new Set();
+        
+        existingBookings.forEach(booking => {
+          conflictingTimes.add(booking.start_time);
+        });
+        
+        // Remove conflicting time slots
+        return availableSlots.filter(slot => !conflictingTimes.has(slot.start_time));
+      }
+      
+      return availableSlots;
+      
+    } catch (dbError) {
+      console.error('Error filtering conflicting times:', dbError);
+      // Return available slots if we can't filter conflicts
+      return availableSlots;
+    }
+    
   } catch (error) {
     console.error('Error in getTrainerAvailableSlots:', error);
     throw error;
@@ -62,20 +139,21 @@ export const getTrainerAvailableSlots = async (
 // Create a new booking
 export const createTrainerBooking = async (bookingData: BookingRequest): Promise<TrainerBooking> => {
   try {
-    // Calculate end time based on start time and duration
-    const startTime = new Date(`2000-01-01T${bookingData.start_time}`);
-    const endTime = new Date(startTime.getTime() + bookingData.duration_minutes * 60000);
-    const endTimeString = endTime.toTimeString().slice(0, 5);
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      throw new Error('User not authenticated');
+    }
 
     const { data, error } = await supabase
       .from('trainer_bookings')
       .insert({
-        user_id: (await supabase.auth.getUser()).data.user?.id,
+        user_id: user.id,
         trainer_id: bookingData.trainer_id,
         session_date: bookingData.session_date,
         start_time: bookingData.start_time,
-        end_time: endTimeString,
+        end_time: bookingData.end_time,
         duration_minutes: bookingData.duration_minutes,
+        session_type: bookingData.session_type || 'personal_training',
         notes: bookingData.notes,
         status: 'pending'
       })
@@ -100,8 +178,7 @@ export const getUserBookings = async (): Promise<TrainerBooking[]> => {
     const { data, error } = await supabase
       .from('trainer_bookings')
       .select('*')
-      .order('session_date', { ascending: true })
-      .order('start_time', { ascending: true });
+      .order('session_date', { ascending: true });
 
     if (error) {
       console.error('Error getting user bookings:', error);
@@ -110,7 +187,7 @@ export const getUserBookings = async (): Promise<TrainerBooking[]> => {
 
     return data || [];
   } catch (error) {
-    console.error('Error in getUserBookings:', error);
+    console.error('Error getting user bookings:', error);
     throw error;
   }
 };
@@ -118,18 +195,49 @@ export const getUserBookings = async (): Promise<TrainerBooking[]> => {
 // Get trainer's bookings (for trainers to see incoming requests)
 export const getTrainerBookings = async (): Promise<TrainerBooking[]> => {
   try {
-    const { data, error } = await supabase
+    // First get the bookings
+    const { data: bookings, error: bookingsError } = await supabase
       .from('trainer_bookings')
       .select('*')
-      .order('session_date', { ascending: true })
-      .order('start_time', { ascending: true });
+      .order('session_date', { ascending: true });
 
-    if (error) {
-      console.error('Error getting trainer bookings:', error);
-      throw error;
+    if (bookingsError) {
+      console.error('Error getting trainer bookings:', bookingsError);
+      throw bookingsError;
     }
 
-    return data || [];
+    if (!bookings || bookings.length === 0) {
+      return [];
+    }
+
+    // Get unique user IDs from the bookings
+    const userIds = Array.from(new Set(bookings.map(booking => booking.user_id)));
+    
+    // Fetch user profiles separately
+    const { data: userProfiles, error: profilesError } = await supabase
+      .from('user_profiles')
+      .select('id, full_name, email')
+      .in('id', userIds);
+
+    if (profilesError) {
+      console.error('Error getting user profiles:', profilesError);
+      // Return bookings without user profiles if we can't fetch them
+      return bookings;
+    }
+
+    // Create a map of user profiles for quick lookup
+    const userProfileMap = new Map();
+    userProfiles?.forEach(profile => {
+      userProfileMap.set(profile.id, profile);
+    });
+
+    // Combine bookings with user profiles
+    const bookingsWithProfiles = bookings.map(booking => ({
+      ...booking,
+      user_profile: userProfileMap.get(booking.user_id) || null
+    }));
+
+    return bookingsWithProfiles;
   } catch (error) {
     console.error('Error in getTrainerBookings:', error);
     throw error;
@@ -228,22 +336,76 @@ export const checkTimeSlotAvailability = async (
   durationMinutes: number
 ): Promise<boolean> => {
   try {
+    // Check if there are any conflicting bookings
     const { data, error } = await supabase
-      .rpc('check_trainer_availability', {
-        p_trainer_id: trainerId,
-        p_session_date: sessionDate,
-        p_start_time: startTime,
-        p_duration_minutes: durationMinutes
-      });
+      .from('trainer_bookings')
+      .select('id')
+      .eq('trainer_id', trainerId)
+      .eq('session_date', sessionDate)
+      .not('status', 'in', '(cancelled,declined)')
+      .or(`start_time.lt.${startTime},end_time.gt.${startTime}`)
+      .limit(1);
 
     if (error) {
       console.error('Error checking time slot availability:', error);
       throw error;
     }
 
-    return data || false;
+    // If no conflicting bookings found, the slot is available
+    return !data || data.length === 0;
   } catch (error) {
     console.error('Error in checkTimeSlotAvailability:', error);
+    throw error;
+  }
+};
+
+// Get trainer's availability settings
+export const getTrainerAvailability = async (trainerId: string) => {
+  try {
+    const { data, error } = await supabase
+      .from('trainer_profiles')
+      .select('availability, is_available')
+      .eq('id', trainerId)
+      .single();
+
+    if (error) {
+      console.error('Error getting trainer availability:', error);
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    console.error('Error in getTrainerAvailability:', error);
+    throw error;
+  }
+};
+
+// Update trainer's availability
+export const updateTrainerAvailability = async (
+  trainerId: string, 
+  availability: Array<{start_time: string, end_time: string}>,
+  isAvailable: boolean = true
+) => {
+  try {
+    const { data, error } = await supabase
+      .from('trainer_profiles')
+      .update({
+        availability: availability,
+        is_available: isAvailable,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', trainerId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error updating trainer availability:', error);
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    console.error('Error in updateTrainerAvailability:', error);
     throw error;
   }
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,9 +9,10 @@ import {
   Alert,
   RefreshControl,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+
 import { supabase } from '@/lib/supabase';
-import { ShoppingBag, Package, DollarSign, Star } from 'lucide-react-native';
+import { Package, ShoppingBag, DollarSign } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 
 interface ShopProduct {
   id: string;
@@ -29,7 +30,7 @@ export default function ShopScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const router = useRouter();
+
 
   const categories = [
     { id: 'all', name: 'All', icon: Package },
@@ -39,11 +40,7 @@ export default function ShopScreen() {
     { id: 'accessories', name: 'Accessories', icon: Package },
   ];
 
-  useEffect(() => {
-    fetchProducts();
-  }, [selectedCategory]);
-
-  const fetchProducts = async () => {
+  const fetchProducts = useCallback(async () => {
     try {
       setLoading(true);
       let query = supabase
@@ -69,7 +66,11 @@ export default function ShopScreen() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    fetchProducts();
+  }, [fetchProducts]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -114,7 +115,7 @@ export default function ShopScreen() {
           <Image source={{ uri: product.image_url }} style={styles.productImage} />
         ) : (
           <View style={styles.placeholderImage}>
-            <Package size={40} color="#6C5CE7" />
+            <Package size={40} color="#FF6B35" />
           </View>
         )}
         {product.stock_quantity <= 0 && (
@@ -175,10 +176,15 @@ export default function ShopScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <LinearGradient
+        colors={['#FF6B35', '#FF8C42']}
+        style={styles.header}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
         <Text style={styles.headerTitle}>Gym Shop</Text>
         <Text style={styles.headerSubtitle}>Get the gear you need</Text>
-      </View>
+      </LinearGradient>
 
       {/* Category Filter */}
       <ScrollView
@@ -199,7 +205,7 @@ export default function ShopScreen() {
             >
               <IconComponent
                 size={20}
-                color={isSelected ? '#FFFFFF' : '#6C5CE7'}
+                color={isSelected ? '#FFFFFF' : '#FF6B35'}
               />
               <Text style={[styles.categoryText, isSelected && styles.categoryTextActive]}>
                 {category.name}
@@ -219,7 +225,7 @@ export default function ShopScreen() {
       >
         {products.length === 0 ? (
           <View style={styles.emptyContainer}>
-            <Package size={64} color="#6C5CE7" />
+            <Package size={64} color="#FF6B35" />
             <Text style={styles.emptyTitle}>No products found</Text>
             <Text style={styles.emptySubtitle}>
               {selectedCategory === 'all'
@@ -244,19 +250,20 @@ const styles = StyleSheet.create({
   },
   header: {
     padding: 20,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E9ECEF',
+    paddingTop: 60,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   headerTitle: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#2D3436',
+    color: '#FFFFFF',
     marginBottom: 4,
   },
   headerSubtitle: {
     fontSize: 16,
-    color: '#636E72',
+    color: '#FFFFFF',
+    opacity: 0.9,
   },
   categoryContainer: {
     backgroundColor: '#FFFFFF',
@@ -279,14 +286,14 @@ const styles = StyleSheet.create({
     borderColor: '#E9ECEF',
   },
   categoryButtonActive: {
-    backgroundColor: '#6C5CE7',
-    borderColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
+    borderColor: '#FF6B35',
   },
   categoryText: {
     marginLeft: 6,
     fontSize: 14,
     fontWeight: '600',
-    color: '#6C5CE7',
+    color: '#FF6B35',
   },
   categoryTextActive: {
     color: '#FFFFFF',
@@ -384,7 +391,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 12,

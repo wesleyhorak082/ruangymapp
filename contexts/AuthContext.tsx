@@ -29,6 +29,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        console.log('Auth state change:', { event, sessionId: session?.user?.id });
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
@@ -143,22 +144,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     try {
+      console.log('=== AUTH CONTEXT SIGNOUT STARTED ===');
+      console.log('Current session:', !!session);
+      console.log('Current user:', !!user);
+      
       // Clear local state immediately for instant feedback
       setSession(null);
       setUser(null);
+      console.log('Local state cleared');
       
       // Start Supabase signOut in background
+      console.log('Calling Supabase auth.signOut...');
       const { error } = await supabase.auth.signOut();
       if (error) {
         console.error('Error signing out from Supabase:', error);
+        // Even if Supabase fails, we've cleared local state
       } else {
         console.log('Supabase signOut completed successfully');
       }
       
-      console.log('User signed out successfully (local state cleared)');
+      // Ensure all Supabase sessions are cleared
+      console.log('Refreshing session to ensure cleanup...');
+      await supabase.auth.refreshSession();
+      
+      // Double-check that session is cleared
+      const { data: { session: currentSession } } = await supabase.auth.getSession();
+      console.log('Session after cleanup:', !!currentSession);
+      
+      console.log('=== AUTH CONTEXT SIGNOUT COMPLETED ===');
     } catch (error) {
       console.error('Sign out error:', error);
       // Don't throw since we've already cleared local state
+      // The auth guard will still work since user is null
     }
   };
 

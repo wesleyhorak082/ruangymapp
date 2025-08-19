@@ -8,10 +8,11 @@ import {
   Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { ArrowLeft, Calendar, Clock, User, Star, MapPin } from 'lucide-react-native';
+import { ArrowLeft, Calendar, Clock, User, Star } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
+import ProfilePicture from '@/components/ProfilePicture';
 
 interface TrainerProfile {
   id: string;
@@ -22,7 +23,7 @@ interface TrainerProfile {
   bio: string | null;
   experience_years: number;
   avatar_url: string | null;
-  availability?: Array<{ day: string; slots: string[] }>; // per-day availability
+  availability?: { day: string; slots: string[] }[]; // per-day availability
 }
 
 export default function BookingScreen() {
@@ -168,7 +169,7 @@ export default function BookingScreen() {
     return (
       <View style={styles.container}>
         <LinearGradient
-          colors={['#6C5CE7', '#A29BFE']}
+          colors={['#FF6B35', '#FF8C42']}
           style={styles.header}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
@@ -188,12 +189,12 @@ export default function BookingScreen() {
 
   return (
     <View style={styles.container}>
-      <LinearGradient
-        colors={['#6C5CE7', '#A29BFE']}
-        style={styles.header}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-      >
+              <LinearGradient
+          colors={['#FF6B35', '#FF8C42']}
+          style={styles.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
         <TouchableOpacity 
           style={styles.backButton}
           onPress={() => router.back()}
@@ -224,9 +225,11 @@ export default function BookingScreen() {
                   onPress={() => setSelectedTrainer(trainer.id)}
                 >
                   <View style={styles.trainerInfo}>
-                    <View style={styles.trainerAvatar}>
-                      <User size={24} color="#FFFFFF" />
-                    </View>
+                    <ProfilePicture
+                      avatarUrl={trainer.avatar_url}
+                      fullName={trainer.name}
+                      size={50}
+                    />
                     <View style={styles.trainerDetails}>
                       <Text style={styles.trainerName}>{trainer.name}</Text>
                       <Text style={styles.trainerSpecialty}>{trainer.specialty}</Text>
@@ -235,7 +238,7 @@ export default function BookingScreen() {
                           <Star size={14} color="#FFD700" />
                           <Text style={styles.rating}>{trainer.rating}</Text>
                         </View>
-                        <Text style={styles.price}>${trainer.hourly_rate}/session</Text>
+                        <Text style={styles.price}>R{trainer.hourly_rate}/session</Text>
                       </View>
                     </View>
                   </View>
@@ -377,8 +380,8 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   selectedTrainerCard: {
-    borderColor: '#6C5CE7',
-    backgroundColor: '#F8F7FF',
+    borderColor: '#FF6B35',
+    backgroundColor: '#FFF7F4',
   },
   trainerInfo: {
     flexDirection: 'row',
@@ -389,7 +392,7 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 16,
@@ -448,7 +451,7 @@ const styles = StyleSheet.create({
     width: 24,
     height: 24,
     borderRadius: 12,
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -473,8 +476,8 @@ const styles = StyleSheet.create({
     minWidth: 120,
   },
   selectedTimeSlot: {
-    backgroundColor: '#6C5CE7',
-    borderColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
+    borderColor: '#FF6B35',
   },
   timeSlotText: {
     fontSize: 14,
@@ -492,7 +495,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#ECEFF1',
   },
   dayChipActive: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
   },
   dayChipText: {
     color: '#2D3436',

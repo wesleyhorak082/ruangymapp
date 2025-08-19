@@ -7,18 +7,14 @@ import {
   TouchableOpacity,
   Alert,
   RefreshControl,
+  TextInput,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { 
   Users, 
   CheckCircle, 
   XCircle, 
-  Clock, 
-  MessageCircle,
-  ArrowLeft,
-  User,
-  Star,
-  MapPin,
+  ArrowLeft
 } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -28,6 +24,8 @@ import {
   handleConnectionRequest 
 } from '@/lib/notifications';
 import { supabase } from '@/lib/supabase';
+import ProfilePicture from '@/components/ProfilePicture';
+
 
 interface ConnectionRequest {
   id: string;
@@ -44,23 +42,46 @@ interface UserProfile {
   full_name: string;
   username: string;
   bio?: string;
+  avatar_url?: string;
 }
 
 export default function TrainerDashboard() {
   const { user } = useAuth();
-  const { isTrainer } = useUserRoles();
+  const { isTrainer, loading: rolesLoading } = useUserRoles();
   const [connectionRequests, setConnectionRequests] = useState<ConnectionRequest[]>([]);
   const [allConnectionRequests, setAllConnectionRequests] = useState<ConnectionRequest[]>([]);
   const [userProfiles, setUserProfiles] = useState<Map<string, UserProfile>>(new Map());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeStatus, setActiveStatus] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  
+
 
   useEffect(() => {
-    if (user && isTrainer()) {
+    if (user && isTrainer() && !rolesLoading) {
       fetchConnectionRequests();
+      // Set up real-time subscription for connection requests
+      const subscription = supabase
+        .channel('connection_requests_changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'connection_requests',
+            filter: `trainer_id=eq.${user.id}`
+          },
+          () => {
+            fetchConnectionRequests();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        subscription.unsubscribe();
+      };
     }
-  }, [user, isTrainer, activeStatus]);
+  }, [user, isTrainer, activeStatus, rolesLoading]);
 
   const fetchConnectionRequests = async () => {
     try {
@@ -70,27 +91,26 @@ export default function TrainerDashboard() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      const { data: allRequests, error: allError } = await supabase
+      const { data, error } = await supabase
         .from('connection_requests')
         .select('*')
         .eq('trainer_id', user.id)
         .order('created_at', { ascending: false });
 
-      if (allError) {
-        console.error('❌ Error fetching all requests:', allError);
+      if (error) {
+        console.error('Error fetching connection requests:', error);
         return;
       }
 
-      console.log('🔄 fetchConnectionRequests: All requests loaded:', allRequests);
-      setAllConnectionRequests(allRequests || []);
+      const allRequests = data || [];
       
-      // Filter based on active status
-      let filteredRequests = allRequests || [];
+      let filteredRequests = allRequests;
+      
+      // Apply status filter
       if (activeStatus !== 'all') {
-        filteredRequests = (allRequests || []).filter(req => req.status === activeStatus);
+        filteredRequests = allRequests.filter(request => request.status === activeStatus);
       }
-      
-      console.log('🔄 fetchConnectionRequests: Filtered requests:', filteredRequests);
+
       setConnectionRequests(filteredRequests);
       
 
@@ -101,7 +121,7 @@ export default function TrainerDashboard() {
         
         const { data: profiles, error: profilesError } = await supabase
           .from('user_profiles')
-          .select('id, full_name, username, bio')
+          .select('id, full_name, username, bio, avatar_url')
           .in('id', userIds);
         
         if (profilesError) {
@@ -135,39 +155,20 @@ export default function TrainerDashboard() {
 
   const handleRequest = async (requestId: string, status: 'approved' | 'rejected') => {
     try {
-      console.log('🔄 handleRequest: Starting...', { requestId, status });
-      
-      // Show loading state
-      setLoading(true);
-      
-      const result = await handleConnectionRequest(requestId, status);
-      console.log('🔄 handleRequest: Result:', result);
-      
-      if (result.success) {
-        // Reset loading state immediately
-        setLoading(false);
-        
-        Alert.alert(
-          'Success',
-          `Connection request ${status === 'approved' ? 'approved' : 'rejected'} successfully!`,
-          [
-            {
-              text: 'OK',
-              onPress: async () => {
-                // Refresh the list after user acknowledges
-                await fetchConnectionRequests();
-              }
-            }
-          ]
-        );
-      } else {
-        Alert.alert('Error', result.error || 'Failed to handle request');
-        setLoading(false);
+      const { error } = await supabase
+        .from('connection_requests')
+        .update({ status })
+        .eq('id', requestId);
+
+      if (error) {
+        console.error('Error updating connection request:', error);
+        return;
       }
+
+      // Refresh the connection requests
+      fetchConnectionRequests();
     } catch (error) {
-      console.error('❌ handleRequest: Error:', error);
-      Alert.alert('Error', 'Failed to handle request');
-      setLoading(false);
+      console.error('Unexpected error:', error);
     }
   };
 
@@ -187,6 +188,31 @@ export default function TrainerDashboard() {
   const getStatusText = (status: string) => {
     return status.charAt(0).toUpperCase() + status.slice(1);
   };
+
+
+
+  // Show loading while checking roles
+  if (rolesLoading) {
+    return (
+      <View style={styles.container}>
+        <LinearGradient
+          colors={['#1E293B', '#334155']}
+          style={styles.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+        >
+          <TouchableOpacity 
+            style={styles.backButton}
+            onPress={() => router.back()}
+          >
+            <ArrowLeft size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Connection Requests</Text>
+          <Text style={styles.headerSubtitle}>Checking permissions...</Text>
+        </LinearGradient>
+      </View>
+    );
+  }
 
   // Redirect if not a trainer
   if (!isTrainer()) {
@@ -212,7 +238,7 @@ export default function TrainerDashboard() {
           >
             <ArrowLeft size={24} color="#FFFFFF" />
           </TouchableOpacity>
-                     <Text style={styles.headerTitle}>Manage Requests</Text>
+                     <Text style={styles.headerTitle}>Connection Requests</Text>
            <Text style={styles.headerSubtitle}>Loading...</Text>
         </LinearGradient>
       </View>
@@ -222,7 +248,7 @@ export default function TrainerDashboard() {
   return (
     <View style={styles.container}>
       <LinearGradient
-        colors={['#1E293B', '#334155']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -233,8 +259,8 @@ export default function TrainerDashboard() {
         >
           <ArrowLeft size={24} color="#FFFFFF" />
         </TouchableOpacity>
-                 <Text style={styles.headerTitle}>Manage Requests</Text>
-         <Text style={styles.headerSubtitle}>Approve or reject user requests</Text>
+                            <Text style={styles.headerTitle}>Connection Requests</Text>
+           <Text style={styles.headerSubtitle}>Approve or reject user requests</Text>
       </LinearGradient>
 
       <ScrollView 
@@ -243,28 +269,20 @@ export default function TrainerDashboard() {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
-      >
+              >
         
+
 
         {/* Connection Requests Section */}
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Connection Requests</Text>
-            <TouchableOpacity 
-              style={styles.refreshButton} 
-              onPress={onRefresh}
-              disabled={refreshing}
-            >
-              <Text style={styles.refreshButtonText}>
-                {refreshing ? '⏳' : '🔄'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+           
+          
+          
           
           {/* Status Filter Tabs */}
           <View style={styles.statusTabs}>
             <TouchableOpacity 
-              style={[styles.statusTab, { backgroundColor: '#6C5CE7' }]}
+              style={[styles.statusTab, { backgroundColor: '#FF6B35' }]}
               onPress={() => setActiveStatus('all')}
             >
               <Text style={styles.statusTabText}>All</Text>
@@ -309,9 +327,11 @@ export default function TrainerDashboard() {
                 <View key={request.id} style={styles.requestCard}>
                   <View style={styles.requestHeader}>
                     <View style={styles.userInfo}>
-                      <View style={styles.userAvatar}>
-                        <User size={20} color="#FFFFFF" />
-                      </View>
+                      <ProfilePicture
+                        avatarUrl={userProfile?.avatar_url}
+                        fullName={userProfile?.full_name || userProfile?.username || 'Unknown User'}
+                        size={40}
+                      />
                       <View style={styles.userDetails}>
                         <Text style={styles.userName}>
                           {userProfile?.full_name || userProfile?.username || 'Unknown User'}
@@ -355,25 +375,27 @@ export default function TrainerDashboard() {
                       Requested on {formatDate(request.created_at)}
                     </Text>
                     
-                    {request.status === 'pending' && (
-                      <View style={styles.actionButtons}>
-                        <TouchableOpacity
-                          style={[styles.actionButton, styles.approveButton]}
-                          onPress={() => handleRequest(request.id, 'approved')}
-                        >
-                          <CheckCircle size={16} color="#FFFFFF" />
-                          <Text style={styles.approveButtonText}>Approve</Text>
-                        </TouchableOpacity>
-                        
-                        <TouchableOpacity
-                          style={[styles.actionButton, styles.rejectButton]}
-                          onPress={() => handleRequest(request.id, 'rejected')}
-                        >
-                          <XCircle size={16} color="#FFFFFF" />
-                          <Text style={styles.rejectButtonText}>Reject</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
+                                         {request.status === 'pending' && (
+                       <View style={styles.actionButtons}>
+                         <TouchableOpacity
+                           style={[styles.actionButton, styles.approveButton]}
+                           onPress={() => handleRequest(request.id, 'approved')}
+                           activeOpacity={0.8}
+                         >
+                           <CheckCircle size={16} color="#FFFFFF" />
+                           <Text style={styles.approveButtonText}>Approve</Text>
+                         </TouchableOpacity>
+                         
+                         <TouchableOpacity
+                           style={[styles.actionButton, styles.rejectButton]}
+                           onPress={() => handleRequest(request.id, 'rejected')}
+                           activeOpacity={0.8}
+                         >
+                           <XCircle size={16} color="#FFFFFF" />
+                           <Text style={styles.rejectButtonText}>Reject</Text>
+                         </TouchableOpacity>
+                       </View>
+                     )}
                   </View>
                 </View>
               );
@@ -381,6 +403,8 @@ export default function TrainerDashboard() {
           )}
         </View>
       </ScrollView>
+
+
     </View>
   );
 }
@@ -394,6 +418,8 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     paddingBottom: 30,
     paddingHorizontal: 20,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   backButton: {
     position: 'absolute',
@@ -417,7 +443,7 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
     paddingTop: 30,
   },
 
@@ -438,14 +464,18 @@ const styles = StyleSheet.create({
   statusTabs: {
     flexDirection: 'row',
     marginBottom: 16,
-    gap: 8,
+    gap: 6,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
   },
   statusTab: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
-    minWidth: 80,
+    minWidth: 70,
     alignItems: 'center',
+    flex: 1,
+    maxWidth: '22%',
   },
   statusTabText: {
     color: '#FFFFFF',
@@ -475,58 +505,65 @@ const styles = StyleSheet.create({
   requestCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
-    padding: 20,
+    padding: 14,
     marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 4,
+    width: '100%',
+    overflow: 'hidden',
   },
   requestHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: 16,
+    gap: 12,
   },
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  userAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#6C5CE7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
+    flex: 1,
+    minWidth: 0,
   },
   userDetails: {
     flex: 1,
+    minWidth: 0,
+    marginLeft: 12,
   },
   userName: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#1E293B',
+    flexShrink: 1,
   },
   userUsername: {
     fontSize: 14,
     color: '#64748B',
     marginTop: 2,
+    flexShrink: 1,
   },
   requestStatus: {
     alignItems: 'flex-end',
+    minWidth: 80,
   },
   statusBadge: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     paddingVertical: 6,
     borderRadius: 12,
+    minWidth: 65,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   statusText: {
-    fontSize: 12,
+    fontSize: 10,
     fontWeight: 'bold',
     color: '#FFFFFF',
+    textAlign: 'center',
+    lineHeight: 12,
   },
   messageSection: {
     marginBottom: 16,
@@ -557,25 +594,25 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   goalTag: {
-    backgroundColor: 'rgba(108, 92, 231, 0.1)',
+    backgroundColor: 'rgba(255, 107, 53, 0.1)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(108, 92, 231, 0.2)',
+    borderColor: 'rgba(255, 107, 53, 0.2)',
   },
   goalText: {
     fontSize: 12,
-    color: '#6C5CE7',
+    color: '#FF6B35',
     fontWeight: '600',
   },
   requestFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: 'column',
+    gap: 12,
     paddingTop: 16,
     borderTopWidth: 1,
     borderTopColor: 'rgba(0, 0, 0, 0.1)',
+    width: '100%',
   },
   requestDate: {
     fontSize: 12,
@@ -583,22 +620,30 @@ const styles = StyleSheet.create({
   },
   actionButtons: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 8,
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    width: '100%',
   },
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 12,
     borderRadius: 20,
     gap: 6,
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    maxWidth: '48%',
+    minHeight: 44,
   },
   approveButton: {
     backgroundColor: '#00B894',
   },
   approveButtonText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   rejectButton: {
@@ -606,7 +651,7 @@ const styles = StyleSheet.create({
   },
   rejectButtonText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
   },
   errorText: {
@@ -616,7 +661,7 @@ const styles = StyleSheet.create({
     marginTop: 100,
   },
   refreshButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     padding: 10,
     borderRadius: 20,
     alignItems: 'center',
@@ -629,12 +674,243 @@ const styles = StyleSheet.create({
     minWidth: 40,
     minHeight: 40,
     borderWidth: 1,
-    borderColor: 'rgba(108, 92, 231, 0.2)',
+    borderColor: 'rgba(255, 107, 53, 0.2)',
   },
   refreshButtonText: {
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
   },
-
+  
+  // Availability styles
+  editButton: {
+    backgroundColor: '#FF6B35',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  editButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  availabilityCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  availabilityHeader: {
+    marginBottom: 16,
+  },
+  availabilityStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  availabilityStatusText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  noAvailabilityText: {
+    fontSize: 14,
+    color: '#94A3B8',
+    fontStyle: 'italic',
+  },
+  timeSlotsList: {
+    gap: 8,
+  },
+  timeSlotItem: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  timeSlotText: {
+    fontSize: 14,
+    color: '#475569',
+    fontWeight: '500',
+  },
+  
+  // Modal styles
+  modalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    margin: 20,
+    width: '90%',
+    maxWidth: 400,
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#1E293B',
+  },
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F1F5F9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  closeButtonText: {
+    fontSize: 18,
+    color: '#64748B',
+    fontWeight: 'bold',
+  },
+  modalBody: {
+    gap: 20,
+  },
+  toggleSection: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  toggleLabel: {
+    fontSize: 16,
+    color: '#1E293B',
+    fontWeight: '500',
+  },
+  toggleButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    minWidth: 60,
+    alignItems: 'center',
+  },
+  toggleButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  timeSlotsLabel: {
+    fontSize: 16,
+    color: '#1E293B',
+    fontWeight: '600',
+    marginBottom: 12,
+  },
+  timeSlotEditor: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  timeInputs: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  timeInput: {
+    flex: 1,
+  },
+  timeInputLabel: {
+    fontSize: 12,
+    color: '#64748B',
+    marginBottom: 4,
+  },
+  timeInputField: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    color: '#1E293B',
+    backgroundColor: '#FFFFFF',
+  },
+  removeButton: {
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  removeButtonText: {
+    color: '#DC2626',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  addButton: {
+    backgroundColor: '#F0F9FF',
+    borderWidth: 2,
+    borderColor: '#0EA5E9',
+    borderStyle: 'dashed',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  addButtonText: {
+    color: '#0EA5E9',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 24,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  cancelButton: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  cancelButtonText: {
+    color: '#64748B',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveButton: {
+    flex: 1,
+    backgroundColor: '#FF6B35',
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  saveButtonDisabled: {
+    opacity: 0.6,
+  },
+  saveButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
 });

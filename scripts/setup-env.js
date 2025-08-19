@@ -4,7 +4,7 @@ const path = require('path');
 console.log('🔧 Setting up environment variables for database migrations...\n');
 
 // Check if .env file exists
-const envPath = path.join(__dirname, '.env');
+const envPath = path.join(process.cwd(), '.env');
 const envExists = fs.existsSync(envPath);
 
 if (envExists) {

@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { useAuth } from '@/contexts/AuthContext';
+import { canSendMessage } from './privacySettings';
 
 export interface Conversation {
   id: string;
@@ -211,8 +211,26 @@ export const sendMessage = async (
     file_type: string;
     thumbnail_url?: string;
   }
-): Promise<Message | null> => {
+): Promise<{ success: boolean; message?: Message; error?: string }> => {
   try {
+    // Check if sender can send message to receiver based on privacy settings
+    const canSend = await canSendMessage(receiverId);
+    if (!canSend) {
+      // Create notification for sender about blocked message using RPC
+      await supabase.rpc('create_notification', {
+        p_user_id: senderId,
+        p_type: 'new_message',
+        p_title: 'Message Blocked',
+        p_message: 'This user is not allowing messages at the moment',
+        p_data: { blocked_user_id: receiverId, reason: 'privacy_settings' }
+      });
+
+      return {
+        success: false,
+        error: 'This user is not allowing messages at the moment'
+      };
+    }
+
     const messageData: any = {
       conversation_id: conversationId,
       sender_id: senderId,
@@ -245,9 +263,34 @@ export const sendMessage = async (
       })
       .eq('id', conversationId);
 
-    return message;
+    // Create notification for the receiver about the new message
+    try {
+      await supabase.rpc('create_notification', {
+        p_user_id: receiverId,
+        p_type: 'new_message',
+        p_title: 'New Message',
+        p_message: `You have a new message: ${content.substring(0, 50)}${content.length > 50 ? '...' : ''}`,
+        p_data: { 
+          conversation_id: conversationId,
+          sender_id: senderId,
+          message_id: message.id,
+          message_preview: content.substring(0, 100)
+        }
+      });
+    } catch (notificationError) {
+      console.log('⚠️ Could not create notification for new message:', notificationError);
+      // Don't fail the message send if notification fails
+    }
+
+    return {
+      success: true,
+      message
+    };
   } catch (error) {
-    return null;
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to send message'
+    };
   }
 };
 
@@ -472,7 +515,7 @@ export const sendMessageWithAttachment = async (
     file_type: string;
     thumbnail_url?: string;
   }
-): Promise<Message | null> => {
+): Promise<{ success: boolean; message?: Message; error?: string }> => {
   return sendMessage(conversationId, senderId, receiverId, content, 'file', attachment);
 };
 
@@ -577,4 +620,177 @@ export const markMessageAsDelivered = async (messageId: string, userId: string):
 // Mark message as read
 export const markMessageAsRead = async (messageId: string, userId: string): Promise<void> => {
   await updateMessageDeliveryStatus(messageId, 'read', userId);
+};
+
+// Get connected users for starting new conversations
+export const getConnectedUsers = async (userId: string): Promise<{
+  id: string;
+  name: string;
+  type: 'user' | 'trainer';
+  avatar_url?: string;
+  specialty?: string;
+  hourly_rate?: number;
+  is_online?: boolean;
+  last_seen?: string;
+}[]> => {
+  try {
+    // Get user's connections (both as user and as trainer)
+    const { data: connections, error } = await supabase
+      .from('trainer_user_connections')
+      .select(`
+        user_id,
+        trainer_id,
+        user_profiles!trainer_user_connections_user_id_fkey (
+          id,
+          full_name,
+          username,
+          avatar_url,
+          user_type
+        )
+      `)
+      .or(`user_id.eq.${userId},trainer_id.eq.${userId}`);
+
+    if (error) {
+      console.error('Error fetching connections:', error);
+      return [];
+    }
+
+    if (!connections) return [];
+
+    // Transform connections to connected users
+    const connectedUsers: {
+      id: string;
+      name: string;
+      type: 'user' | 'trainer';
+      avatar_url?: string;
+      specialty?: string;
+      hourly_rate?: number;
+      is_online?: boolean;
+      last_seen?: string;
+    }[] = [];
+
+    for (const connection of connections) {
+      if (connection.user_id === userId) {
+        // Current user is the user, so the other person is the trainer
+        const otherUserId = connection.trainer_id;
+        
+        // Get the trainer's profile information
+        const { data: trainerProfile } = await supabase
+          .from('user_profiles')
+          .select('id, full_name, username, avatar_url')
+          .eq('id', otherUserId)
+          .single();
+
+        // Get trainer-specific information
+        const { data: trainerDetails } = await supabase
+          .from('trainer_profiles')
+          .select('specialty, hourly_rate')
+          .eq('id', otherUserId)
+          .single();
+
+        // Get online status
+        const { data: onlineStatus } = await supabase
+          .rpc('get_user_online_status', { p_user_id: otherUserId });
+
+        if (trainerProfile) {
+          connectedUsers.push({
+            id: otherUserId,
+            name: trainerProfile.full_name || trainerProfile.username || 'Unknown Trainer',
+            type: 'trainer',
+            avatar_url: trainerProfile.avatar_url,
+            specialty: trainerDetails?.specialty,
+            hourly_rate: trainerDetails?.hourly_rate,
+            is_online: onlineStatus?.[0]?.is_online || false,
+            last_seen: onlineStatus?.[0]?.last_seen,
+          });
+        }
+      } else if (connection.trainer_id === userId) {
+        // Current user is the trainer, so the other person is the user
+        const otherUserId = connection.user_id;
+        
+        // Get the user's profile information
+        const { data: userProfile } = await supabase
+          .from('user_profiles')
+          .select('id, full_name, username, avatar_url')
+          .eq('id', otherUserId)
+          .single();
+
+        // Get online status
+        const { data: onlineStatus } = await supabase
+          .rpc('get_user_online_status', { p_user_id: otherUserId });
+
+        if (userProfile) {
+          connectedUsers.push({
+            id: otherUserId,
+            name: userProfile.full_name || userProfile.username || 'Unknown User',
+            type: 'user',
+            avatar_url: userProfile.avatar_url,
+            is_online: onlineStatus?.[0]?.is_online || false,
+            last_seen: onlineStatus?.[0]?.last_seen,
+          });
+        }
+      }
+    }
+
+    return connectedUsers;
+  } catch (error) {
+    console.error('Error getting connected users:', error);
+    return [];
+  }
+};
+
+// Start a new conversation with a connected user
+export const startNewConversation = async (
+  userId: string,
+  userType: 'user' | 'trainer',
+  otherUserId: string,
+  otherUserType: 'user' | 'trainer',
+  initialMessage?: string
+): Promise<{ success: boolean; conversationId?: string; error?: string }> => {
+  try {
+    // Check if conversation already exists
+    const existingConversation = await getConversationByParticipants(userId, otherUserId);
+    if (existingConversation) {
+      return {
+        success: true,
+        conversationId: existingConversation.id
+      };
+    }
+
+    // Create new conversation
+    const { data: conversation, error: convError } = await supabase
+      .from('conversations')
+      .insert({
+        participant_1_id: userId,
+        participant_1_type: userType,
+        participant_2_id: otherUserId,
+        participant_2_type: otherUserType,
+        last_message_time: new Date().toISOString()
+      })
+      .select()
+      .single();
+
+    if (convError) throw convError;
+
+    // Send initial message if provided
+    if (initialMessage && conversation) {
+      await sendMessage(
+        conversation.id,
+        userId,
+        otherUserId,
+        initialMessage,
+        'text'
+      );
+    }
+
+    return {
+      success: true,
+      conversationId: conversation.id
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to start conversation'
+    };
+  }
 };

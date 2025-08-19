@@ -10,26 +10,24 @@ import {
   Modal,
 } from 'react-native';
 import { 
-  Users, 
   Plus, 
   MessageCircle, 
-  TrendingUp, 
   Target, 
   Calendar, 
   Phone, 
   Edit3, 
   BarChart3,
-  Send,
-  Search,
-  Clock
+  Search
 } from 'lucide-react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUserRoles } from '@/hooks/useUserRoles';
-import QuickMessage from '@/components/QuickMessage';
+
+import ProfilePicture from '@/components/ProfilePicture';
 import { supabase } from '@/lib/supabase';
 import { getTrainerPrograms, assignProgramToUser } from '@/lib/trainerPrograms';
+import { getOrCreateConversation } from '@/lib/messaging';
 
 interface Client {
   id: string;
@@ -38,10 +36,9 @@ interface Client {
   email: string;
   phone?: string;
   goals: string[];
-  last_workout?: string;
-  progress_percentage: number;
   status: 'active' | 'inactive' | 'pending';
   created_at: string;
+  avatar_url?: string;
 }
 
 interface Workout {
@@ -56,13 +53,13 @@ interface Workout {
       name: string;
       focus: string;
       duration: number;
-      exercises: Array<{
+      exercises: {
         name: string;
         sets: number;
         reps: string;
         rest: string;
         type: string;
-      }>;
+      }[];
     };
   };
   created_at: string;
@@ -71,10 +68,10 @@ interface Workout {
 
 interface ClientWorkout {
   id: string;
-  client_id: string;
-  workout_id: string;
-  assigned_date: string;
-  status: 'assigned' | 'in_progress' | 'completed';
+  user_id: string;
+  program_id: string;
+  assigned_at: string;
+  is_active: boolean;
   workout: Workout;
 }
 
@@ -87,11 +84,11 @@ export default function ClientDashboard() {
   const [activeTab, setActiveTab] = useState<'clients' | 'messages'>('clients');
   const [showAddClientModal, setShowAddClientModal] = useState(false);
 
-  const [showProgressModal, setShowProgressModal] = useState(false);
+
   const [showWorkoutModal, setShowWorkoutModal] = useState(false);
   const [showWorkoutSelectionModal, setShowWorkoutSelectionModal] = useState(false);
-  const [showQuickMessageModal, setShowQuickMessageModal] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
+
   const [searchQuery, setSearchQuery] = useState('');
 
   const [workouts, setWorkouts] = useState<Workout[]>([]);
@@ -102,6 +99,7 @@ export default function ClientDashboard() {
     email: '',
     phone: '',
     goals: '',
+    avatar_url: '',
   });
 
 
@@ -118,62 +116,36 @@ export default function ClientDashboard() {
     try {
       if (!user) return;
       
-      console.log('🔍 ClientDashboard: Fetching clients for trainer:', user.id);
-      
-      // First, fetch approved trainer-user connections
-      const { data: connections, error: connectionsError } = await supabase
+      const { data: connections, error } = await supabase
         .from('trainer_user_connections')
         .select('*')
         .eq('trainer_id', user.id)
         .eq('status', 'active');
 
-      if (connectionsError) {
-        console.error('Error fetching trainer connections:', connectionsError);
-        throw connectionsError;
+      if (error) {
+        console.error('Error fetching connections:', error);
+        return;
       }
 
-      console.log('🔍 ClientDashboard: Active connections found:', connections?.length || 0);
+      const activeConnections = connections?.filter(conn => conn.status === 'active') || [];
+      const clientIds = activeConnections.map(conn => conn.user_id);
 
-      if (!connections || connections.length === 0) {
+      if (clientIds.length === 0) {
         setClients([]);
         return;
       }
 
-      // Get user IDs from connections
-      const userIds = connections.map(conn => conn.user_id);
-      
-      // Fetch user profiles for those connections
-      const { data: userProfiles, error: profilesError } = await supabase
+      const { data: clientData, error: clientError } = await supabase
         .from('user_profiles')
-        .select('id, full_name, username, phone, goals, created_at')
-        .in('id', userIds);
+        .select('*')
+        .in('id', clientIds);
 
-      if (profilesError) {
-        console.error('Error fetching user profiles:', profilesError);
-        throw profilesError;
+      if (clientError) {
+        console.error('Error fetching client data:', clientError);
+        return;
       }
 
-      // Transform user profiles to Client interface
-      const clientsData: Client[] = (userProfiles || []).map((profile: any) => {
-        const clientData = {
-          id: profile.id, // Use the profile ID directly (this is the auth user ID)
-          full_name: profile.full_name || profile.username || 'Unknown User',
-          username: profile.username || 'unknown',
-          email: 'email@example.com', // Placeholder since we can't get emails directly
-          phone: profile.phone || '',
-          goals: Array.isArray(profile.goals) ? profile.goals : [],
-          last_workout: undefined, // TODO: Implement workout tracking
-          progress_percentage: 0, // TODO: Implement progress calculation
-          status: 'active' as const, // TODO: Implement status logic
-          created_at: profile.created_at || new Date().toISOString(),
-        };
-        
-        console.log('Client data:', clientData);
-        return clientData;
-      });
-
-      console.log('🔍 ClientDashboard: Clients loaded:', clientsData.length);
-      setClients(clientsData);
+      setClients(clientData || []);
     } catch (error) {
       console.error('Error fetching clients:', error);
       setClients([]);
@@ -223,10 +195,9 @@ export default function ClientDashboard() {
         email: newClient.email.trim(),
         phone: newClient.phone.trim(),
         goals: newClient.goals.trim() ? newClient.goals.trim().split(',').map(g => g.trim()) : [],
-        last_workout: undefined,
-        progress_percentage: 0,
         status: 'pending' as Client['status'],
         created_at: new Date().toISOString(),
+        avatar_url: newClient.avatar_url,
       };
 
       setClients(prev => [clientData, ...prev]);
@@ -236,6 +207,7 @@ export default function ClientDashboard() {
         email: '',
         phone: '',
         goals: '',
+        avatar_url: '',
       });
       setShowAddClientModal(false);
       Alert.alert('Success', 'Client added successfully!');
@@ -249,37 +221,73 @@ export default function ClientDashboard() {
 
 
 
-  const handleClientStatusChange = (client: Client) => {
+
+
+  const handleRemoveClient = async (client: Client) => {
     Alert.alert(
-      'Change Client Status',
-      `Current status: ${client.status}`,
+      'Remove Client',
+      `Are you sure you want to remove ${client.full_name}? This will disconnect them from your services and they will receive a notification.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Active', onPress: () => updateClientStatus(client.id, 'active') },
-        { text: 'Inactive', onPress: () => updateClientStatus(client.id, 'inactive') },
-        { text: 'Pending', onPress: () => updateClientStatus(client.id, 'pending') },
+        { 
+          text: 'Remove', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Remove the connection from trainer_user_connections
+              const { error: connectionError } = await supabase
+                .from('trainer_user_connections')
+                .delete()
+                .eq('trainer_id', user!.id)
+                .eq('user_id', client.id);
+
+              if (connectionError) {
+                console.error('Error removing client connection:', connectionError);
+                Alert.alert('Error', 'Failed to remove client. Please try again.');
+                return;
+              }
+
+              // Send notification to the user
+              try {
+                const { error: notificationError } = await supabase
+                  .from('notifications')
+                  .insert({
+                    user_id: client.id,
+                    type: 'client_removed',
+                    title: 'Trainer Connection Removed',
+                    message: `Your trainer has removed you from their client list. You can search for new trainers in the app.`,
+                    data: {
+                      trainer_id: user!.id,
+                      action: 'client_removed'
+                    }
+                  });
+
+                if (notificationError) {
+                  console.error('Error sending notification:', notificationError);
+                }
+              } catch (notificationError) {
+                console.error('Error sending notification:', notificationError);
+              }
+
+              // Remove client from local state
+              setClients(prev => prev.filter(c => c.id !== client.id));
+              
+              Alert.alert('Success', `${client.full_name} has been removed from your client list.`);
+            } catch (error) {
+              console.error('Error removing client:', error);
+              Alert.alert('Error', 'Failed to remove client. Please try again.');
+            }
+          }
+        }
       ]
     );
   };
 
-  const updateClientStatus = (clientId: string, newStatus: Client['status']) => {
-    setClients(prev => 
-      prev.map(client => 
-        client.id === clientId 
-          ? { ...client, status: newStatus }
-          : client
-      )
-    );
-    Alert.alert('Success', 'Client status updated!');
-  };
-
   const assignWorkoutToClient = async (workout: Workout, client: Client) => {
     try {
-      console.log('Assigning workout:', workout.name, 'to client:', client.full_name, 'with ID:', client.id);
-      
       // Check if workout is already assigned to this client
       const existingAssignment = clientWorkouts.find(
-        cw => cw.client_id === client.id && cw.workout_id === workout.id
+        cw => cw.user_id === client.id && cw.program_id === workout.id
       );
 
       if (existingAssignment) {
@@ -288,18 +296,16 @@ export default function ClientDashboard() {
       }
 
       // Use the API to assign the program to the user
-      console.log('Calling assignProgramToUser with client ID:', client.id, 'and workout ID:', workout.id);
       const result = await assignProgramToUser(client.id, workout.id);
-      console.log('Assignment result:', result);
       
       if (result.success) {
         // Add to local state for immediate UI update
         const newClientWorkout: ClientWorkout = {
           id: Date.now().toString(),
-          client_id: client.id,
-          workout_id: workout.id,
-          assigned_date: new Date().toISOString(),
-          status: 'assigned',
+          user_id: client.id,
+          program_id: workout.id,
+          assigned_at: new Date().toISOString(),
+          is_active: true,
           workout: workout,
         };
 
@@ -350,7 +356,7 @@ export default function ClientDashboard() {
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <LinearGradient
-        colors={['#6C5CE7', '#A855F7']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -398,16 +404,6 @@ export default function ClientDashboard() {
               <Text style={styles.sectionTitle}>Your Clients</Text>
               <View style={styles.headerActions}>
                 <TouchableOpacity
-                  style={styles.refreshButton}
-                  onPress={() => {
-                    fetchClients();
-                    fetchWorkouts();
-                    fetchClientWorkouts();
-                  }}
-                >
-                  <Text style={styles.refreshButtonText}>🔄 Refresh</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
                   style={styles.addButton}
                   onPress={() => setShowAddClientModal(true)}
                 >
@@ -419,17 +415,30 @@ export default function ClientDashboard() {
             {/* Email Status Note */}
             <View style={styles.emailStatusNote}>
               <Text style={styles.emailStatusText}>
-                📧 Note: We're working on displaying real email addresses. For now, you'll see placeholder text.
+                📧 Note: We&apos;re working on displaying real email addresses. For now, you&apos;ll see placeholder text.
               </Text>
             </View>
 
-            <View style={styles.clientsGrid}>
+            <ScrollView 
+              style={styles.clientsGrid}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.clientsGridContent}
+            >
               {filteredClients.map((client) => (
                 <View key={client.id} style={styles.clientCard}>
                   <View style={styles.clientHeader}>
                     <View style={styles.clientInfo}>
-                      <Text style={styles.clientName}>{client.full_name}</Text>
-                      <Text style={styles.clientUsername}>@{client.username}</Text>
+                      <View style={styles.clientImageContainer}>
+                        <ProfilePicture
+                          avatarUrl={client.avatar_url}
+                          fullName={client.full_name}
+                          size={50}
+                        />
+                      </View>
+                      <View style={styles.clientTextDetails}>
+                        <Text style={styles.clientName}>{client.full_name}</Text>
+                        <Text style={styles.clientUsername}>@{client.username}</Text>
+                      </View>
                     </View>
                     <View style={[styles.statusBadge, { backgroundColor: getStatusColor(client.status) }]}>
                       <Text style={styles.statusText}>{client.status}</Text>
@@ -450,53 +459,54 @@ export default function ClientDashboard() {
                       </View>
                     )}
                                          <View style={styles.detailRow}>
-                       <Calendar size={16} color="#6B7280" />
-                       <Text style={styles.detailText}>
-                         Last workout: {client.last_workout ? new Date(client.last_workout).toLocaleDateString() : 'Never'}
-                       </Text>
-                     </View>
-                     <View style={styles.detailRow}>
                        <Target size={16} color="#6B7280" />
                        <Text style={styles.detailText}>
-                         Assigned workouts: {clientWorkouts.filter(cw => cw.client_id === client.id).length}
+                         Assigned workouts: {clientWorkouts.filter(cw => cw.user_id === client.id).length}
                        </Text>
                      </View>
-                  </View>
-
-                  <View style={styles.progressSection}>
-                    <Text style={styles.progressLabel}>Progress</Text>
-                    <View style={styles.progressBarContainer}>
-                      <View style={[styles.progressBar, { width: `${client.progress_percentage}%` }]} />
-                    </View>
-                    <Text style={styles.progressText}>{client.progress_percentage}%</Text>
                   </View>
 
                                      <View style={styles.clientActions}>
                                            <TouchableOpacity
                         style={styles.actionButton}
-                        onPress={() => {
+                        onPress={async () => {
                           // Validate that client has a valid UUID
                           if (!client.id || client.id.startsWith('unknown-')) {
                             Alert.alert('Error', 'Cannot send message to this client. Invalid client ID.');
                             return;
                           }
-                          setSelectedClient(client);
-                          setShowQuickMessageModal(true);
+                          
+                          if (!user?.id) return;
+
+                          try {
+                            // Get or create conversation directly
+                            const conversationId = await getOrCreateConversation(
+                              user.id,
+                              'trainer',
+                              client.id,
+                              'user'
+                            );
+
+                            if (!conversationId) {
+                              Alert.alert('Error', 'Failed to create conversation');
+                              return;
+                            }
+
+                            // Navigate to messages tab with the conversation
+                            router.push('/(tabs)/messages');
+                            
+                            // Note: The conversation will be available in the messages tab
+                            // The trainer can start chatting immediately
+                            
+                          } catch (error) {
+                            console.error('Error starting conversation:', error);
+                            Alert.alert('Error', 'Failed to start conversation');
+                          }
                         }}
                       >
-                        <MessageCircle size={16} color="#6C5CE7" />
+                        <MessageCircle size={16} color="#FF6B35" />
                         <Text style={styles.actionText}>Message</Text>
                       </TouchableOpacity>
-                     <TouchableOpacity
-                       style={styles.actionButton}
-                       onPress={() => {
-                         setSelectedClient(client);
-                         setShowProgressModal(true);
-                       }}
-                     >
-                       <BarChart3 size={16} color="#4ECDC4" />
-                       <Text style={styles.actionText}>Progress</Text>
-                     </TouchableOpacity>
                      <TouchableOpacity
                        style={styles.actionButton}
                        onPress={() => {
@@ -507,17 +517,17 @@ export default function ClientDashboard() {
                        <Target size={16} color="#FF6B35" />
                        <Text style={styles.actionText}>Workouts</Text>
                      </TouchableOpacity>
+                     
                      <TouchableOpacity
-                       style={styles.actionButton}
-                       onPress={() => handleClientStatusChange(client)}
+                       style={styles.removeButton}
+                       onPress={() => handleRemoveClient(client)}
                      >
-                       <Edit3 size={16} color="#10B981" />
-                       <Text style={styles.actionText}>Status</Text>
+                       <Text style={styles.removeButtonText}>Remove</Text>
                      </TouchableOpacity>
                    </View>
                 </View>
               ))}
-            </View>
+            </ScrollView>
           </View>
         )}
 
@@ -563,50 +573,81 @@ export default function ClientDashboard() {
         onRequestClose={() => setShowAddClientModal(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New Client</Text>
+          <View style={styles.addClientModalContent}>
+            <LinearGradient
+              colors={['#FF6B35', '#FF8C42']}
+              style={styles.addClientModalHeader}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+            >
+              <Text style={styles.addClientModalTitle}>Add New Client</Text>
+              <Text style={styles.addClientModalSubtitle}>Enter client information to get started</Text>
+            </LinearGradient>
             
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Full Name"
-              value={newClient.full_name}
-              onChangeText={(text) => setNewClient(prev => ({ ...prev, full_name: text }))}
-            />
+            <ScrollView 
+              style={styles.addClientModalBody}
+              showsVerticalScrollIndicator={true}
+              contentContainerStyle={styles.addClientModalBodyContent}
+            >
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Full Name *</Text>
+                <TextInput
+                  style={styles.addClientModalInput}
+                  placeholder="Enter full name"
+                  value={newClient.full_name}
+                  onChangeText={(text) => setNewClient(prev => ({ ...prev, full_name: text }))}
+                />
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Username (optional)</Text>
+                <TextInput
+                  style={styles.addClientModalInput}
+                  placeholder="Enter username"
+                  value={newClient.username}
+                  onChangeText={(text) => setNewClient(prev => ({ ...prev, username: text }))}
+                />
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Email *</Text>
+                <TextInput
+                  style={styles.addClientModalInput}
+                  placeholder="Enter email address"
+                  value={newClient.email}
+                  onChangeText={(text) => setNewClient(prev => ({ ...prev, email: text }))}
+                  keyboardType="email-address"
+                />
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Phone (optional)</Text>
+                <TextInput
+                  style={styles.addClientModalInput}
+                  placeholder="Enter phone number"
+                  value={newClient.phone}
+                  onChangeText={(text) => setNewClient(prev => ({ ...prev, phone: text }))}
+                  keyboardType="phone-pad"
+                />
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Goals (optional)</Text>
+                <TextInput
+                  style={styles.addClientModalInput}
+                  placeholder="Enter fitness goals, comma-separated"
+                  value={newClient.goals}
+                  onChangeText={(text) => setNewClient(prev => ({ ...prev, goals: text }))}
+                  multiline
+                  numberOfLines={3}
+                  textAlignVertical="top"
+                />
+              </View>
+            </ScrollView>
             
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Username (optional)"
-              value={newClient.username}
-              onChangeText={(text) => setNewClient(prev => ({ ...prev, username: text }))}
-            />
-            
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Email"
-              value={newClient.email}
-              onChangeText={(text) => setNewClient(prev => ({ ...prev, email: text }))}
-              keyboardType="email-address"
-            />
-            
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Phone (optional)"
-              value={newClient.phone}
-              onChangeText={(text) => setNewClient(prev => ({ ...prev, phone: text }))}
-              keyboardType="phone-pad"
-            />
-            
-            <TextInput
-              style={styles.modalInput}
-              placeholder="Goals (comma-separated)"
-              value={newClient.goals}
-              onChangeText={(text) => setNewClient(prev => ({ ...prev, goals: text }))}
-              multiline
-            />
-            
-            <View style={styles.modalButtons}>
+            <View style={styles.addClientModalActions}>
               <TouchableOpacity
-                style={[styles.modalButton, styles.cancelButton]}
+                style={[styles.addClientModalButton, styles.cancelButton]}
                 onPress={() => {
                   setShowAddClientModal(false);
                   setNewClient({
@@ -615,13 +656,14 @@ export default function ClientDashboard() {
                     email: '',
                     phone: '',
                     goals: '',
+                    avatar_url: '',
                   });
                 }}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalButton, styles.saveButton]}
+                style={[styles.addClientModalButton, styles.saveButton]}
                 onPress={addClient}
               >
                 <Text style={styles.saveButtonText}>Add Client</Text>
@@ -636,56 +678,7 @@ export default function ClientDashboard() {
 
              
 
-       {/* Client Progress Modal */}
-       <Modal
-         visible={showProgressModal}
-         transparent={true}
-         animationType="slide"
-         onRequestClose={() => setShowProgressModal(false)}
-       >
-         <View style={styles.modalOverlay}>
-           <View style={styles.modalContent}>
-             <Text style={styles.modalTitle}>
-               {selectedClient?.full_name}'s Progress
-             </Text>
-             
-             <View style={styles.progressModalContent}>
-               <View style={styles.progressMetric}>
-                 <Text style={styles.progressMetricLabel}>Current Progress</Text>
-                 <Text style={styles.progressMetricValue}>{selectedClient?.progress_percentage}%</Text>
-               </View>
-               
-               <View style={styles.progressMetric}>
-                 <Text style={styles.progressMetricLabel}>Last Workout</Text>
-                 <Text style={styles.progressMetricValue}>
-                   {selectedClient?.last_workout ? new Date(selectedClient.last_workout).toLocaleDateString() : 'Never'}
-                 </Text>
-               </View>
-               
-               <View style={styles.progressMetric}>
-                 <Text style={styles.progressMetricLabel}>Goals</Text>
-                 <View style={styles.goalsList}>
-                   {selectedClient?.goals.map((goal, index) => (
-                     <Text key={index} style={styles.goalItem}>• {goal}</Text>
-                   ))}
-                 </View>
-               </View>
-             </View>
-             
-             <View style={styles.modalButtons}>
-               <TouchableOpacity
-                 style={[styles.modalButton, styles.cancelButton]}
-                 onPress={() => {
-                   setShowProgressModal(false);
-                   setSelectedClient(null);
-                 }}
-               >
-                 <Text style={styles.cancelButtonText}>Close</Text>
-               </TouchableOpacity>
-             </View>
-           </View>
-         </View>
-       </Modal>
+
 
                {/* Client Workouts Modal */}
         <Modal
@@ -698,22 +691,22 @@ export default function ClientDashboard() {
             <View style={styles.modalContent}>
               <View style={styles.workoutModalHeader}>
                 <Text style={styles.modalTitle}>
-                  {selectedClient?.full_name}'s Workout Program
+                  {selectedClient?.full_name}&apos;s Workout Program
                 </Text>
               </View>
               
               <View style={styles.workoutModalContent}>
                 {/* Current Workout Assignment */}
                 {(() => {
-                  const currentWorkout = clientWorkouts.find(cw => cw.client_id === selectedClient?.id);
+                  const currentWorkout = clientWorkouts.find(cw => cw.user_id === selectedClient?.id);
                   return currentWorkout ? (
                     <View style={styles.currentWorkoutSection}>
                       <Text style={styles.currentWorkoutTitle}>Current Workout Program</Text>
                       <View style={styles.currentWorkoutCard}>
                         <View style={styles.currentWorkoutHeader}>
                           <Text style={styles.currentWorkoutName}>{currentWorkout.workout.name}</Text>
-                          <View style={[styles.statusBadge, { backgroundColor: getWorkoutStatusColor(currentWorkout.status) }]}>
-                            <Text style={styles.statusText}>{currentWorkout.status.replace('_', ' ')}</Text>
+                          <View style={[styles.statusBadge, { backgroundColor: currentWorkout.is_active ? '#10B981' : '#6B7280' }]}>
+                            <Text style={styles.statusText}>{currentWorkout.is_active ? 'Active' : 'Inactive'}</Text>
                           </View>
                         </View>
                         <Text style={styles.currentWorkoutDescription}>{currentWorkout.workout.description}</Text>
@@ -734,14 +727,14 @@ export default function ClientDashboard() {
                           </View>
                         </View>
                         <Text style={styles.assignmentDate}>
-                          Assigned: {new Date(currentWorkout.assigned_date).toLocaleDateString()}
+                          Assigned: {new Date(currentWorkout.assigned_at).toLocaleDateString()}
                         </Text>
                       </View>
                     </View>
                   ) : (
                     <View style={styles.noWorkoutSection}>
                       <Text style={styles.noWorkoutTitle}>No Workout Assigned</Text>
-                      <Text style={styles.noWorkoutSubtitle}>This client doesn't have a workout program yet.</Text>
+                      <Text style={styles.noWorkoutSubtitle}>This client doesn&apos;t have a workout program yet.</Text>
                     </View>
                   );
                 })()}
@@ -754,7 +747,7 @@ export default function ClientDashboard() {
                   >
                     <Target size={20} color="#FFFFFF" />
                     <Text style={styles.assignWorkoutText}>
-                      {clientWorkouts.find(cw => cw.client_id === selectedClient?.id) ? 'Change Workout' : 'Assign Workout'}
+                      {clientWorkouts.find(cw => cw.user_id === selectedClient?.id) ? 'Change Workout' : 'Assign Workout'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -795,7 +788,7 @@ export default function ClientDashboard() {
                     <Target size={48} color="#6B7280" />
                     <Text style={styles.noWorkoutsTitle}>No Programs Available</Text>
                     <Text style={styles.noWorkoutsText}>
-                      You haven't created any workout programs yet. Go to "Program Management" to create your first program.
+                      You haven&apos;t created any workout programs yet. Go to &quot;Program Management&quot; to create your first program.
                     </Text>
                   </View>
                 ) : (
@@ -840,14 +833,7 @@ export default function ClientDashboard() {
 
 
          
-        {/* Quick Message Modal */}
-        <QuickMessage
-          visible={showQuickMessageModal}
-          onClose={() => setShowQuickMessageModal(false)}
-          clientId={selectedClient?.id || ''}
-          clientName={selectedClient?.full_name || ''}
-          clientType="user"
-        />
+
        
      </ScrollView>
    );
@@ -880,18 +866,7 @@ const getDifficultyColor = (difficulty: Workout['difficulty']) => {
   }
 };
 
-const getWorkoutStatusColor = (status: ClientWorkout['status']) => {
-  switch (status) {
-    case 'assigned':
-      return '#6B7280';
-    case 'in_progress':
-      return '#F59E0B';
-    case 'completed':
-      return '#10B981';
-    default:
-      return '#6B7280';
-  }
-};
+
 
 
 
@@ -910,6 +885,8 @@ const styles = StyleSheet.create({
   header: {
     padding: 20,
     paddingTop: 60,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   title: {
     fontSize: 28,
@@ -963,7 +940,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   activeTab: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
   },
   tabText: {
     fontSize: 14,
@@ -1013,28 +990,19 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   addButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     width: 40,
     height: 40,
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  refreshButton: {
-    backgroundColor: '#10B981',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  refreshButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
+
   clientsGrid: {
     gap: 16,
+  },
+  clientsGridContent: {
+    paddingBottom: 20,
   },
   clientCard: {
     backgroundColor: '#FFFFFF',
@@ -1053,6 +1021,14 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   clientInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  clientImageContainer: {
+    marginRight: 12,
+  },
+  clientTextDetails: {
     flex: 1,
   },
   clientName: {
@@ -1089,33 +1065,7 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     marginLeft: 8,
   },
-  progressSection: {
-    marginBottom: 16,
-  },
-  progressLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#2D3436',
-    marginBottom: 8,
-  },
-  progressBarContainer: {
-    height: 8,
-    backgroundColor: '#F3F4F6',
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  progressBar: {
-    height: '100%',
-    backgroundColor: '#6C5CE7',
-    borderRadius: 4,
-  },
-  progressText: {
-    fontSize: 12,
-    color: '#6C5CE7',
-    fontWeight: '600',
-    textAlign: 'right',
-  },
+
   clientActions: {
     flexDirection: 'row',
     gap: 12,
@@ -1135,6 +1085,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#2D3436',
     marginLeft: 4,
+  },
+
+  // Remove button styles
+  removeButton: {
+    backgroundColor: '#FEE2E2',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+  },
+  removeButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#DC2626',
   },
 
   communicationStats: {
@@ -1157,7 +1124,7 @@ const styles = StyleSheet.create({
   statNumber: {
     fontSize: 24,
     fontWeight: 'bold',
-    color: '#6C5CE7',
+    color: '#FF6B35',
     marginBottom: 4,
   },
   statLabel: {
@@ -1166,7 +1133,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   bulkMessageButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1184,6 +1151,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 10,
   },
   modalContent: {
     backgroundColor: '#FFFFFF',
@@ -1227,7 +1195,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3F4F6',
   },
   saveButton: {
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
   },
   cancelButtonText: {
     fontSize: 16,
@@ -1239,32 +1207,98 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
+
+  // Enhanced Add Client Modal Styles
+  addClientModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    width: '95%',
+    height: '85%',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  addClientModalHeader: {
+    padding: 28,
+    paddingTop: 32,
+    paddingBottom: 24,
+    alignItems: 'center',
+  },
+  addClientModalTitle: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  addClientModalSubtitle: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    opacity: 0.9,
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  addClientModalBody: {
+    flex: 1,
+    paddingHorizontal: 28,
+    paddingTop: 24,
+    paddingBottom: 20,
+  },
+  addClientModalBodyContent: {
+    paddingBottom: 140,
+  },
+  inputGroup: {
+    marginBottom: 32,
+  },
+  inputLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 10,
+  },
+  addClientModalInput: {
+    borderWidth: 1.5,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    padding: 18,
+    fontSize: 16,
+    backgroundColor: '#FFFFFF',
+    color: '#1F2937',
+    minHeight: 56,
+  },
+  addClientModalActions: {
+    flexDirection: 'row',
+    gap: 16,
+    padding: 28,
+    paddingTop: 24,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    backgroundColor: '#FFFFFF',
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+  },
+  addClientModalButton: {
+    flex: 1,
+    paddingVertical: 18,
+    paddingHorizontal: 24,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 4,
+  },
   
-   progressModalContent: {
-     marginBottom: 20,
-   },
-   progressMetric: {
-     marginBottom: 16,
-   },
-   progressMetricLabel: {
-     fontSize: 14,
-     fontWeight: '600',
-     color: '#6B7280',
-     marginBottom: 4,
-   },
-   progressMetricValue: {
-     fontSize: 18,
-     fontWeight: 'bold',
-     color: '#2D3436',
-   },
-   goalsList: {
-     marginTop: 8,
-   },
-   goalItem: {
-     fontSize: 14,
-     color: '#2D3436',
-     marginBottom: 4,
-   },
+
        workoutModalContent: {
       marginBottom: 20,
       width: '100%',
@@ -1469,7 +1503,7 @@ const styles = StyleSheet.create({
        marginBottom: 20,
      },
      assignWorkoutButton: {
-       backgroundColor: '#6C5CE7',
+       backgroundColor: '#FF6B35',
        flexDirection: 'row',
        alignItems: 'center',
        justifyContent: 'center',
@@ -1509,12 +1543,7 @@ const styles = StyleSheet.create({
        marginBottom: 8,
        textAlign: 'center',
      },
-     noWorkoutsText: {
-       fontSize: 14,
-       color: '#6B7280',
-       textAlign: 'center',
-       lineHeight: 20,
-     },
+
      workoutSelectionItem: {
        backgroundColor: '#F8F9FA',
        padding: 16,
@@ -1557,12 +1586,11 @@ const styles = StyleSheet.create({
        fontWeight: '500',
        textTransform: 'capitalize',
      },
-    
-   
-   communicationActions: {
-     gap: 12,
-   },
-   messageHistoryButton: {
+     
+     communicationActions: {
+       gap: 12,
+     },
+     messageHistoryButton: {
      backgroundColor: '#4ECDC4',
      flexDirection: 'row',
      alignItems: 'center',
@@ -1616,7 +1644,7 @@ const styles = StyleSheet.create({
      maxWidth: '80%',
    },
    sentMessage: {
-     backgroundColor: '#6C5CE7',
+     backgroundColor: '#FF6B35',
      alignSelf: 'flex-end',
      marginLeft: '20%',
    },

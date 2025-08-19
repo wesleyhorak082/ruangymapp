@@ -1,15 +1,67 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
+// Get environment variables with fallbacks
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 
+  'https://example-project.supabase.co';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 
+  'your-anon-key-here';
 
+// Validate environment variables
+if (!supabaseUrl || supabaseUrl === 'https://example-project.supabase.co') {
+  console.warn('⚠️ EXPO_PUBLIC_SUPABASE_URL not set or using default value');
+}
+
+if (!supabaseAnonKey || supabaseAnonKey === 'your-anon-key-here') {
+  console.warn('⚠️ EXPO_PUBLIC_SUPABASE_ANON_KEY not set or using default value');
+}
+
+// Create Supabase client with enhanced configuration
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
   },
+  global: {
+    headers: {
+      'X-Client-Info': 'ruangymapp/1.0.0',
+      'User-Agent': 'RuanGymApp-Mobile/1.0.0',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Cache-Control': 'no-cache',
+      'X-Platform': 'mobile',
+    },
+  },
+  realtime: {
+    params: {
+      eventsPerSecond: 10,
+    },
+  },
 });
+
+// Test connection function
+export const testSupabaseConnection = async () => {
+  try {
+    console.log('🔍 Testing Supabase connection...');
+    console.log('URL:', supabaseUrl);
+    
+    const { data, error } = await supabase
+      .from('user_profiles')
+      .select('id')
+      .limit(1);
+    
+    if (error) {
+      console.error('❌ Connection test failed:', error.message);
+      return false;
+    }
+    
+    console.log('✅ Supabase connection successful');
+    return true;
+  } catch (error) {
+    console.error('❌ Connection test error:', error);
+    return false;
+  }
+};
 
 export type Database = {
   public: {
@@ -319,6 +371,120 @@ export type Database = {
           duration?: number;
           completed?: boolean;
           created_at?: string;
+        };
+      };
+      exercise_sets: {
+        Row: {
+          id: string;
+          user_id: string;
+          exercise_name: string;
+          workout_date: string;
+          set_number: number;
+          weight_kg: number;
+          reps: number;
+          rest_seconds: number | null;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          exercise_name: string;
+          workout_date: string;
+          set_number: number;
+          weight_kg: number;
+          reps: number;
+          rest_seconds?: number | null;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          exercise_name?: string;
+          workout_date?: string;
+          set_number?: number;
+          weight_kg?: number;
+          reps?: number;
+          rest_seconds?: number | null;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      exercise_workouts: {
+        Row: {
+          id: string;
+          user_id: string;
+          workout_name: string;
+          workout_date: string;
+          duration_minutes: number | null;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          workout_name: string;
+          workout_date: string;
+          duration_minutes?: number | null;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          workout_name?: string;
+          workout_date?: string;
+          duration_minutes?: number | null;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      exercise_progress: {
+        Row: {
+          id: string;
+          user_id: string;
+          exercise_name: string;
+          date: string;
+          max_weight: number | null;
+          max_reps: number | null;
+          total_volume: number | null;
+          sets_completed: number | null;
+          notes: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          exercise_name: string;
+          date: string;
+          max_weight?: number | null;
+          max_reps?: number | null;
+          total_volume?: number | null;
+          sets_completed?: number | null;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          exercise_name?: string;
+          date?: string;
+          max_weight?: number | null;
+          max_reps?: number | null;
+          total_volume?: number | null;
+          sets_completed?: number | null;
+          notes?: string | null;
+          created_at?: string;
+          updated_at?: string;
         };
       };
       gym_checkins: {

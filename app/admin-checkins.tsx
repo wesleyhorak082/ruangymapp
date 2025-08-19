@@ -5,11 +5,10 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
   RefreshControl,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { ArrowLeft, Users, UserCheck, Clock, Calendar, TrendingUp } from 'lucide-react-native';
+import { ArrowLeft, Users, UserCheck, Clock } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 
@@ -20,6 +19,7 @@ interface CheckInRecord {
   check_in_time: string;
   check_out_time: string | null;
   check_in_reason: string | null;
+  is_checked_in: boolean;
   created_at: string;
   user_profiles: {
     full_name: string | null;
@@ -31,7 +31,7 @@ interface CheckInRecord {
 type TimeFilter = 'today' | 'week' | 'month' | 'all';
 
 export default function AdminCheckInsScreen() {
-  const [checkIns, setCheckIns] = useState<CheckInRecord[]>([]);
+
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<'all' | 'users' | 'trainers'>('all');
@@ -41,6 +41,10 @@ export default function AdminCheckInsScreen() {
     activeCheckIns: 0,
     averageSessionTime: 0,
   });
+
+  // State for aggregated data
+  const [aggregatedData, setAggregatedData] = useState<any[]>([]);
+  const [expandedUsers, setExpandedUsers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchCheckIns();
@@ -96,13 +100,84 @@ export default function AdminCheckInsScreen() {
         return;
       }
 
-      setCheckIns(data || []);
-      calculateStats(data || []);
+      // Filter out records with missing user profiles when filtering by user type
+      let filteredData = data || [];
+      if (filter !== 'all') {
+        filteredData = filteredData.filter(checkIn => 
+          checkIn.user_profiles && checkIn.user_profiles.user_type
+        );
+      }
+
+      // NEW: Store aggregated data for new UI
+      const aggregatedDataResult = aggregateCheckInsByUser(filteredData);
+      setAggregatedData(aggregatedDataResult);
+
+      
+      calculateStats(filteredData);
     } catch (error) {
       console.error('Error fetching check-ins:', error);
     } finally {
       setLoading(false);
     }
+  };
+
+  // NEW: Data aggregation function to group check-ins by user
+  const aggregateCheckInsByUser = (data: CheckInRecord[]) => {
+    const userMap = new Map();
+    
+    data.forEach(checkIn => {
+      const userId = checkIn.user_id;
+      
+      if (!userMap.has(userId)) {
+        userMap.set(userId, {
+          userInfo: {
+            id: userId,
+            name: checkIn.user_profiles?.full_name || checkIn.user_profiles?.username || 'Unknown User',
+            type: checkIn.user_type,
+            icon: getUserTypeIcon(checkIn.user_type)
+          },
+          checkIns: [],
+          summary: {
+            totalCheckIns: 0,
+            isCurrentlyActive: false,
+            lastCheckInTime: null,
+            totalSessionTime: 0,
+            completedSessions: 0
+          }
+        });
+      }
+      
+      const userData = userMap.get(userId);
+      userData.checkIns.push(checkIn);
+      userData.summary.totalCheckIns++;
+      
+      // Update active status
+      if (checkIn.is_checked_in) {
+        userData.summary.isCurrentlyActive = true;
+      }
+      
+      // Update last check-in time
+      const checkInTime = new Date(checkIn.check_in_time);
+      if (!userData.summary.lastCheckInTime || checkInTime > userData.summary.lastCheckInTime) {
+        userData.summary.lastCheckInTime = checkInTime;
+      }
+      
+      // Calculate session duration if completed
+      if (checkIn.check_out_time && checkIn.check_in_time) {
+        const duration = new Date(checkIn.check_out_time).getTime() - checkInTime.getTime();
+        userData.summary.totalSessionTime += duration;
+        userData.summary.completedSessions++;
+      }
+    });
+    
+    // Convert to array and sort by last check-in time
+    const aggregatedData = Array.from(userMap.values()).sort((a, b) => {
+      if (!a.summary.lastCheckInTime) return 1;
+      if (!b.summary.lastCheckInTime) return -1;
+      return b.summary.lastCheckInTime.getTime() - a.summary.lastCheckInTime.getTime();
+    });
+    
+    return aggregatedData;
   };
 
   const calculateStats = (data: CheckInRecord[]) => {
@@ -146,13 +221,7 @@ export default function AdminCheckInsScreen() {
     });
   };
 
-  const getStatusColor = (isCheckedIn: boolean) => {
-    return isCheckedIn ? '#00B894' : '#E17055';
-  };
 
-  const getStatusText = (isCheckedIn: boolean) => {
-    return isCheckedIn ? 'Checked In' : 'Checked Out';
-  };
 
   const getUserTypeIcon = (userType: string) => {
     return userType === 'trainer' ? '🏋️' : '💪';
@@ -241,6 +310,8 @@ export default function AdminCheckInsScreen() {
         </ScrollView>
       </View>
 
+      
+
       {/* User Type Filter */}
       <View style={styles.filterContainer}>
         <TouchableOpacity 
@@ -283,75 +354,105 @@ export default function AdminCheckInsScreen() {
           <View style={styles.loadingContainer}>
             <Text style={styles.loadingText}>Loading check-ins...</Text>
           </View>
-        ) : checkIns.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No check-ins found for {getTimeFilterLabel(timeFilter).toLowerCase()}</Text>
-          </View>
-        ) : (
-          checkIns.map((checkIn) => (
-            <View key={checkIn.id} style={styles.checkInCard}>
-              <View style={styles.checkInHeader}>
-                <View style={styles.userInfo}>
-                  <Text style={styles.userTypeIcon}>
-                    {getUserTypeIcon(checkIn.user_type)}
-                  </Text>
-                  <View>
-                    <Text style={styles.userName}>
-                      {checkIn.user_profiles.full_name || checkIn.user_profiles.username || 'Unknown User'}
-                    </Text>
-                    <Text style={styles.userType}>
-                      {getUserTypeLabel(checkIn.user_type)}
-                    </Text>
-                  </View>
-                </View>
-                <View style={[
-                  styles.statusBadge,
-                  { backgroundColor: getStatusColor(checkIn.is_checked_in) }
-                ]}>
-                  <Text style={styles.statusText}>
-                    {getStatusText(checkIn.is_checked_in)}
-                  </Text>
-                </View>
-              </View>
+                 ) : aggregatedData.length === 0 ? (
+           <View style={styles.emptyContainer}>
+             <Text style={styles.emptyText}>No users found for {getTimeFilterLabel(timeFilter).toLowerCase()}</Text>
+           </View>
+         ) : (
+           aggregatedData.map((userData) => (
+             <View key={userData.userInfo.id} style={styles.userSummaryCard}>
+               {/* User Summary Header */}
+               <View style={styles.userSummaryHeader}>
+                 <View style={styles.userInfo}>
+                   <Text style={styles.userTypeIcon}>
+                     {userData.userInfo.icon}
+                   </Text>
+                   <View style={styles.userDetails}>
+                     <Text style={styles.userName}>
+                       {userData.userInfo.name}
+                     </Text>
+                     <Text style={styles.userType}>
+                       {getUserTypeLabel(userData.userInfo.type)}
+                     </Text>
+                   </View>
+                 </View>
+                 
+                 <View style={styles.userSummaryStats}>
+                   <View style={[
+                     styles.statusBadge,
+                     { backgroundColor: userData.summary.isCurrentlyActive ? '#00B894' : '#E17055' }
+                   ]}>
+                     <Text style={styles.statusText}>
+                       {userData.summary.isCurrentlyActive ? 'Active' : 'Inactive'}
+                     </Text>
+                   </View>
+                   
+                   <TouchableOpacity
+                     style={styles.expandButton}
+                     onPress={() => {
+                       const newExpanded = new Set(expandedUsers);
+                       if (newExpanded.has(userData.userInfo.id)) {
+                         newExpanded.delete(userData.userInfo.id);
+                       } else {
+                         newExpanded.add(userData.userInfo.id);
+                       }
+                       setExpandedUsers(newExpanded);
+                     }}
+                   >
+                     <Text style={styles.expandButtonText}>
+                       {expandedUsers.has(userData.userInfo.id) ? '▼' : '▶'}
+                     </Text>
+                   </TouchableOpacity>
+                 </View>
+               </View>
 
-              <View style={styles.checkInDetails}>
-                <View style={styles.detailRow}>
-                  <Clock size={14} color="#636E72" />
-                  <Text style={styles.detailText}>
-                    Check-in: {formatTime(checkIn.check_in_time)} • {formatDateTime(checkIn.check_in_time)}
-                  </Text>
-                </View>
-                
-                {checkIn.check_out_time && (
-                  <View style={styles.detailRow}>
-                    <Clock size={14} color="#636E72" />
-                    <Text style={styles.detailText}>
-                      Check-out: {formatTime(checkIn.check_out_time)} • {formatDateTime(checkIn.check_out_time)}
-                    </Text>
-                  </View>
-                )}
+               {/* User Summary Info */}
+               <View style={styles.userSummaryInfo}>
+                 <View style={styles.summaryRow}>
+                   <Text style={styles.summaryLabel}>Total Check-ins:</Text>
+                   <Text style={styles.summaryValue}>{userData.summary.totalCheckIns}</Text>
+                 </View>
+                 
+                 {userData.summary.lastCheckInTime && (
+                   <View style={styles.summaryRow}>
+                     <Text style={styles.summaryLabel}>Last Check-in:</Text>
+                     <Text style={styles.summaryValue}>
+                       {formatTime(userData.summary.lastCheckInTime.toISOString())} • {formatDateTime(userData.summary.lastCheckInTime.toISOString())}
+                     </Text>
+                   </View>
+                 )}
+                 
+                 {userData.summary.completedSessions > 0 && (
+                   <View style={styles.summaryRow}>
+                     <Text style={styles.summaryLabel}>Avg. Session:</Text>
+                     <Text style={styles.summaryValue}>
+                       {Math.round(userData.summary.totalSessionTime / userData.summary.completedSessions / (1000 * 60))} min
+                     </Text>
+                   </View>
+                 )}
+               </View>
 
-                {checkIn.check_in_reason && (
-                  <View style={styles.detailRow}>
-                    <Calendar size={14} color="#636E72" />
-                    <Text style={styles.detailText}>
-                      Reason: {checkIn.check_in_reason}
-                    </Text>
-                  </View>
-                )}
-
-                {checkIn.check_out_time && checkIn.check_in_time && (
-                  <View style={styles.detailRow}>
-                    <TrendingUp size={14} color="#636E72" />
-                    <Text style={styles.detailText}>
-                      Session Duration: {Math.round((new Date(checkIn.check_out_time).getTime() - new Date(checkIn.check_in_time).getTime()) / (1000 * 60))} minutes
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </View>
-          ))
-        )}
+               {/* Expanded Details */}
+               {expandedUsers.has(userData.userInfo.id) && (
+                 <View style={styles.expandedDetails}>
+                   <Text style={styles.expandedTitle}>Check-in History:</Text>
+                   {userData.checkIns.map((checkIn: CheckInRecord) => (
+                     <View key={checkIn.id} style={styles.detailRow}>
+                       <Clock size={14} color="#636E72" />
+                       <Text style={styles.detailText}>
+                         {formatTime(checkIn.check_in_time)} • {formatDateTime(checkIn.check_in_time)}
+                         {checkIn.check_out_time && ` → ${formatTime(checkIn.check_out_time)}`}
+                         {checkIn.check_out_time && checkIn.check_in_time && 
+                           ` (${Math.round((new Date(checkIn.check_out_time).getTime() - new Date(checkIn.check_in_time).getTime()) / (1000 * 60))} min)`
+                         }
+                       </Text>
+                     </View>
+                   ))}
+                 </View>
+               )}
+             </View>
+           ))
+         )}
       </ScrollView>
     </View>
   );
@@ -555,5 +656,80 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#636E72',
     marginLeft: 8,
+  },
+
+
+  userSummaryCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  userSummaryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  userDetails: {
+    flex: 1,
+  },
+  userSummaryStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  expandButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#F8F9FA',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  expandButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2C3E50',
+  },
+  userSummaryInfo: {
+    borderTopWidth: 1,
+    borderTopColor: '#F1F3F4',
+    paddingTop: 16,
+    marginBottom: 16,
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  summaryLabel: {
+    fontSize: 14,
+    color: '#636E72',
+    fontWeight: '500',
+  },
+  summaryValue: {
+    fontSize: 14,
+    color: '#2D3436',
+    fontWeight: '600',
+  },
+  expandedDetails: {
+    borderTopWidth: 1,
+    borderTopColor: '#F1F3F4',
+    paddingTop: 16,
+  },
+  expandedTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2D3436',
+    marginBottom: 12,
   },
 });

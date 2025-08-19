@@ -91,10 +91,24 @@ export default function EnhancedMessage({
 
   const loadReactions = async () => {
     try {
+      // Skip reactions for temporary messages (they don't exist in database yet)
+      if (!message.id || message.id.startsWith('temp_')) {
+        setReactions([]);
+        return;
+      }
+      
+      // Validate message ID is a proper UUID before calling the function
+      if (typeof message.id !== 'string' || message.id.length !== 36) {
+        console.warn('Invalid message ID format for reactions:', message.id);
+        setReactions([]);
+        return;
+      }
+      
       const reactionsSummary = await getMessageReactionsSummary(message.id);
       setReactions(reactionsSummary);
     } catch (error) {
       console.error('Error loading reactions:', error);
+      setReactions([]);
     }
   };
 

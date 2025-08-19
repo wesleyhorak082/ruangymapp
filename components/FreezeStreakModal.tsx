@@ -85,7 +85,7 @@ export const FreezeStreakModal: React.FC<FreezeStreakModalProps> = ({
             {!canFreeze && (
               <View style={styles.warningBox}>
                 <Text style={styles.warningText}>
-                  ⚠️ You've already used your weekly freeze. It resets every Monday.
+                  ⚠️ You&apos;ve already used your weekly freeze. It resets every Monday.
                 </Text>
               </View>
             )}

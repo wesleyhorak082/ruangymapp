@@ -21,7 +21,7 @@ async function runMigration(migrationFile) {
   try {
     console.log(`Running migration: ${migrationFile}`);
     
-    const migrationPath = path.join(__dirname, '..', 'supabase', 'migrations', migrationFile);
+    const migrationPath = path.join(process.cwd(), 'supabase', 'migrations', migrationFile);
     const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
     
     // Split SQL into individual statements
@@ -78,7 +78,8 @@ async function runAllMigrations() {
   const migrations = [
     '20250817000000_messaging_system.sql',
     '20250818000000_enhanced_messaging_features.sql',
-    '20250822000000_streak_freeze_system.sql'
+    '20250822000000_streak_freeze_system.sql',
+    '20250827000000_exercise_tracking_system.sql'
   ];
   
   let successCount = 0;

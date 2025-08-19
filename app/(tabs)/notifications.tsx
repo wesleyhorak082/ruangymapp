@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -17,54 +17,43 @@ import {
   Users, 
   Dumbbell, 
   Clock,
-  Trash2,
   Check,
   X
 } from 'lucide-react-native';
-import { useAuth } from '@/contexts/AuthContext';
 import { useUserRoles } from '@/hooks/useUserRoles';
 import { 
   getUserNotifications, 
   getTrainerConnectionRequests, 
   getUserConnectionRequests,
-  handleConnectionRequest,
   markNotificationAsRead,
   markAllNotificationsAsRead,
   getUnreadNotificationCount,
+  handleConnectionRequest,
+  scheduleAutomaticCleanup,
   ConnectionRequest,
   Notification
 } from '@/lib/notifications';
-import { router } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
+import { supabase } from '@/lib/supabase';
+
 
 export default function NotificationsScreen() {
-  const { user } = useAuth();
+
   const { isTrainer } = useUserRoles();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [connectionRequests, setConnectionRequests] = useState<ConnectionRequest[]>([]);
-  const [loading, setLoading] = useState(false);
+
   const [refreshing, setRefreshing] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [isClearingNotifications, setIsClearingNotifications] = useState(false);
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  useFocusEffect(
-    React.useCallback(() => {
-      fetchData();
-    }, [])
-  );
-
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = useCallback(async () => {
     try {
       // Fetch notifications
       try {
         const userNotifications = await getUserNotifications();
         setNotifications(userNotifications);
       } catch (error) {
-        console.error('❌ Error fetching user notifications:', error);
         setNotifications([]);
       }
 
@@ -74,7 +63,6 @@ export default function NotificationsScreen() {
           const trainerRequests = await getTrainerConnectionRequests();
           setConnectionRequests(trainerRequests);
         } catch (error) {
-          console.error('❌ Error fetching trainer connection requests:', error);
           setConnectionRequests([]);
         }
       } else {
@@ -82,7 +70,6 @@ export default function NotificationsScreen() {
           const userRequests = await getUserConnectionRequests();
           setConnectionRequests(userRequests);
         } catch (error) {
-          console.error('❌ Error fetching user connection requests:', error);
           setConnectionRequests([]);
         }
       }
@@ -92,19 +79,29 @@ export default function NotificationsScreen() {
         const count = await getUnreadNotificationCount();
         setUnreadCount(count);
       } catch (error) {
-        console.error('❌ Error fetching unread count:', error);
         setUnreadCount(0);
       }
     } catch (error) {
-      console.error('❌ Error in main fetchData:', error);
-      console.error('❌ Error details:', {
-        message: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined
-      });
-    } finally {
-      setLoading(false);
+      // Handle any unexpected errors silently
     }
-  };
+  }, [isTrainer]);
+
+  useEffect(() => {
+    const initializeData = async () => {
+      await fetchData();
+      
+      // NEW: Check and perform automatic cleanup if needed
+      await scheduleAutomaticCleanup();
+    };
+    
+    initializeData();
+  }, [fetchData]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchData();
+    }, [fetchData])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -124,7 +121,7 @@ export default function NotificationsScreen() {
       );
       setUnreadCount(prev => Math.max(0, prev - 1));
     } catch (error) {
-      console.error('Error marking notification as read:', error);
+      // Handle error silently
     }
   };
 
@@ -136,7 +133,85 @@ export default function NotificationsScreen() {
       );
       setUnreadCount(0);
     } catch (error) {
-      console.error('Error marking all notifications as read:', error);
+      // Handle error silently
+    }
+  };
+
+  const handleClearAllNotifications = async () => {
+    try {
+      // Show confirmation dialog
+      Alert.alert(
+        'Clear All Notifications',
+        'Are you sure you want to clear all notifications? This action cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Clear All', 
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                // Set loading state
+                setIsClearingNotifications(true);
+                
+                // OPTIMIZATION: Update UI immediately for instant feedback
+                setNotifications([]);
+                setUnreadCount(0);
+                
+                // Get current user
+                const { data: { user } } = await supabase.auth.getUser();
+                if (!user) {
+                  Alert.alert('Error', 'User not authenticated');
+                  // Restore notifications if auth fails
+                  fetchData();
+                  return;
+                }
+
+                // Try to delete notifications directly first
+                let { error } = await supabase
+                  .from('notifications')
+                  .delete()
+                  .eq('user_id', user.id);
+
+                // If direct deletion fails, try using the database function
+                if (error) {
+                  console.log('Direct deletion failed, trying database function...');
+                  
+                  const { data: deletedCount, error: functionError } = await supabase
+                    .rpc('clear_user_notifications', { p_user_id: user.id });
+                  
+                  if (functionError) {
+                    console.error('Error clearing notifications from database:', error);
+                    
+                    // Check if it's an RLS policy issue
+                    if (error.code === '42501') {
+                      Alert.alert('Permission Error', 'You do not have permission to delete notifications. This may be due to database security policies.');
+                    } else {
+                      Alert.alert('Warning', 'Notifications were cleared from the app, but there was an issue with the database. They may reappear when you refresh.');
+                    }
+                    return;
+                  } else {
+                    console.log(`✅ Cleared ${deletedCount} notifications using database function`);
+                  }
+                } else {
+                  console.log('✅ Notifications cleared directly');
+                }
+
+                // Show success message
+                Alert.alert('Success', 'All notifications have been cleared successfully!');
+                
+              } catch (dbError) {
+                console.error('Database error:', dbError);
+                Alert.alert('Warning', 'Notifications were cleared from the app, but there was an issue with the database. They may reappear when you refresh.');
+              } finally {
+                // Always clear loading state
+                setIsClearingNotifications(false);
+              }
+            }
+          },
+        ]
+      );
+    } catch (error) {
+      Alert.alert('Error', 'Failed to clear notifications. Please try again.');
     }
   };
 
@@ -154,7 +229,6 @@ export default function NotificationsScreen() {
         Alert.alert('Error', result.error || 'Failed to process request');
       }
     } catch (error) {
-      console.error('Error handling connection request:', error);
       Alert.alert('Error', 'Failed to process request');
     }
   };
@@ -162,7 +236,7 @@ export default function NotificationsScreen() {
   const getNotificationIcon = (type: Notification['type']) => {
     switch (type) {
       case 'connection_request':
-        return <Users size={20} color="#6C5CE7" />;
+        return <Users size={20} color="#FF6B35" />;
       case 'connection_accepted':
         return <CheckCircle size={20} color="#10B981" />;
       case 'connection_rejected':
@@ -218,8 +292,8 @@ export default function NotificationsScreen() {
         <View style={styles.connectionRequestInfo}>
           <Text style={styles.connectionRequestName}>
             {isTrainer() 
-              ? `User (${request.user_id.slice(0, 8)}...)`
-              : `Trainer (${request.trainer_id.slice(0, 8)}...)`
+              ? `User ${request.user_profiles?.full_name || request.user_profiles?.username || `(${request.user_id.slice(0, 8)}...)`}`
+              : `Trainer ${request.trainer_profiles?.full_name || request.trainer_profiles?.username || `(${request.trainer_id.slice(0, 8)}...)`}`
             }
           </Text>
           <Text style={styles.connectionRequestTime}>
@@ -284,7 +358,7 @@ export default function NotificationsScreen() {
       }
     >
       <LinearGradient
-        colors={['#6C5CE7', '#A855F7']}
+        colors={['#FF6B35', '#FF8C42']}
         style={styles.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
@@ -302,12 +376,26 @@ export default function NotificationsScreen() {
                 <Text style={styles.unreadBadgeText}>{unreadCount}</Text>
               </View>
             )}
-            <TouchableOpacity 
-              style={styles.markAllReadButton}
-              onPress={handleMarkAllAsRead}
-            >
-              <Text style={styles.markAllReadText}>Mark All Read</Text>
-            </TouchableOpacity>
+            <View style={styles.headerButtonsContainer}>
+              <TouchableOpacity 
+                style={styles.markAllReadButton}
+                onPress={handleMarkAllAsRead}
+              >
+                <Text style={styles.markAllReadText}>Mark All Read</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[
+                  styles.clearNotificationsButton,
+                  isClearingNotifications && styles.clearNotificationsButtonDisabled
+                ]}
+                onPress={handleClearAllNotifications}
+                disabled={isClearingNotifications}
+              >
+                <Text style={styles.clearNotificationsText}>
+                  {isClearingNotifications ? '🔄 Clearing...' : 'Clear All'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </LinearGradient>
@@ -354,6 +442,8 @@ const styles = StyleSheet.create({
   header: {
     padding: 20,
     paddingTop: 60,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   headerContent: {
     flexDirection: 'row',
@@ -362,6 +452,13 @@ const styles = StyleSheet.create({
   },
   headerText: {
     flex: 1,
+  },
+  menuButton: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    marginBottom: 10,
+    alignSelf: 'flex-start',
   },
   title: {
     fontSize: 28,
@@ -400,6 +497,26 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
   },
+  headerButtonsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  clearNotificationsButton: {
+    backgroundColor: 'rgba(239, 68, 68, 0.8)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  clearNotificationsButtonDisabled: {
+    backgroundColor: 'rgba(156, 163, 175, 0.6)',
+    opacity: 0.7,
+  },
+  clearNotificationsText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
   content: {
     padding: 20,
   },
@@ -427,7 +544,7 @@ const styles = StyleSheet.create({
   },
   unreadNotification: {
     borderLeftWidth: 4,
-    borderLeftColor: '#6C5CE7',
+    borderLeftColor: '#FF6B35',
   },
   notificationIcon: {
     marginRight: 12,
@@ -456,7 +573,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#6C5CE7',
+    backgroundColor: '#FF6B35',
     marginLeft: 8,
     marginTop: 2,
   },
